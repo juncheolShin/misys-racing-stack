@@ -56,7 +56,8 @@ include_directories(
   ${MPCC_SRC_DIR}/Model
   ${MPCC_SRC_DIR}/Params
   ${MPCC_SRC_DIR}/Spline
-
+	
+  ${MPCC_SRC_DIR}/External/blasfeo/include 
   ${MPCC_SRC_DIR}/External/blasfeo/lib/include
   ${MPCC_SRC_DIR}/External/hpipm/lib/include
   ${MPCC_SRC_DIR}/External/Eigen
