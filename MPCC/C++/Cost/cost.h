@@ -42,8 +42,8 @@ struct TrackPoint{
 };
 
 struct ErrorInfo{
-    const Eigen::Matrix<double,1,2> error;
-    const Eigen::Matrix<double,2,NX> d_error;
+    Eigen::Matrix<double,1,2> error;
+    Eigen::Matrix<double,2,NX> d_error;
 };
 
 class Cost {
