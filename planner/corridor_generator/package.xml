@@ -15,6 +15,7 @@
   <depend>nav_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>f110_msgs</depend>
+  <depend>rosidl_default_runtime</depend>
   <depend>mpcc_ros</depend>
 
   <exec_depend>launch</exec_depend>

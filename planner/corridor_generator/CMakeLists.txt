@@ -21,7 +21,8 @@ find_package(nav_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(f110_msgs REQUIRED)
 find_package(frenet_conversion_cpp REQUIRED)
-find_package(mpcc_ros REQUIRED)
+find_package(rosidl_default_runtime REQUIRED)
+
 
 # 소스 파일
 set(SOURCES
@@ -51,7 +52,7 @@ ament_target_dependencies(corridor_generator
     visualization_msgs
     f110_msgs
     frenet_conversion_cpp
-    mpcc_ros
+    rosidl_default_runtime
 )
 
 # yaml-cpp 링크
