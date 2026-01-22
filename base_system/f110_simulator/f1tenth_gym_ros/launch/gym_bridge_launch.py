@@ -58,7 +58,8 @@ def generate_launch_description():
         executable='rviz2',
         name='rviz',
         arguments=[
-            '-d', os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim.rviz')]
+            # '-d', os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim.rviz')]
+            '-d', "/home/misys/forza_ws/race_stack/forza_rviz.rviz"]
     )
     map_server_node = Node(
         package='nav2_map_server',

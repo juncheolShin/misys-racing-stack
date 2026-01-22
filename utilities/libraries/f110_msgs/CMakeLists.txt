@@ -41,7 +41,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/OppWpnt.msg"
   "msg/LtplWpnt.msg"
   "msg/LtplWpntArray.msg"
-  "msg/PurepursuitControl.msg"
+  "msg/L1controllerControl.msg"
   DEPENDENCIES 
   "std_msgs"
   "geometry_msgs"
