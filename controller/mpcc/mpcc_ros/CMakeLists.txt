@@ -5,9 +5,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -77,7 +74,10 @@ add_executable(mpcc_node
 )
 
 target_compile_options(mpcc_node PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fopenmp>)
-target_compile_features(mpcc_node PUBLIC c_std_99 cxx_std_17)
+set_target_properties(mpcc_node PROPERTIES
+  CXX_STANDARD 14
+  CXX_STANDARD_REQUIRED YES
+)
 
 ament_target_dependencies(mpcc_node
   rclcpp nav_msgs geometry_msgs ackermann_msgs
@@ -102,7 +102,11 @@ add_executable(mpcc_node_sim
 )
 
 target_compile_options(mpcc_node_sim PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fopenmp>)
-target_compile_features(mpcc_node_sim PUBLIC c_std_99 cxx_std_17)
+set_target_properties(mpcc_node_sim PROPERTIES
+  CXX_STANDARD 14
+  CXX_STANDARD_REQUIRED YES
+)
+
 
 ament_target_dependencies(mpcc_node_sim
   rclcpp nav_msgs geometry_msgs ackermann_msgs
