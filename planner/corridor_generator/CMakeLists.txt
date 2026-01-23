@@ -22,6 +22,8 @@ find_package(visualization_msgs REQUIRED)
 find_package(f110_msgs REQUIRED)
 find_package(frenet_conversion_cpp REQUIRED)
 find_package(rosidl_default_runtime REQUIRED)
+find_package(mpcc_ros REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 
 # 소스 파일
@@ -52,12 +54,15 @@ ament_target_dependencies(corridor_generator
     visualization_msgs
     f110_msgs
     frenet_conversion_cpp
+    mpcc_ros
     rosidl_default_runtime
 )
+
 
 # yaml-cpp 링크
 target_link_libraries(corridor_generator
     yaml-cpp
+    nlohmann_json::nlohmann_json
 )
 
 # matplotlib-cpp (헤더만 있는 라이브러리)
