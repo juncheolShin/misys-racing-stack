@@ -17,7 +17,6 @@
 #include <omp.h>
 #include <yaml-cpp/yaml.h>
 #include "matplotlibcpp.h"
-#include <nlohmann/json.hpp>  // json 사용
 #include <Eigen/Dense>
 #include "rapidcsv.h"
 //////////////////////////////////////////////////////////////////////
