@@ -23,15 +23,8 @@
 
   <!-- launch simulator -->
   <group if="$(var sim)">
-    <!-- launch teleop -->
-    <include file="$(find-pkg-share f1tenth_stack)/launch/bringup_gym_launch.py">
-      <arg name="joy_teleop_config" value="$(var joy_teleop_config)" />
-      <arg name="vesc_config" value="$(var vesc_config)" />
-      <arg name="sensors_config" value="$(var sensors_config)" />
-      <arg name="mux_config" value="$(var mux_config)" />
-    </include>
-
     <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
+      <!-- <arg name="map_yaml_path" value="$(var map_path)/$(var map_name).yaml" /> -->
       <arg name="map_yaml_path" value="$(var map_path)/$(var map_name).yaml" />
     </include>
     <!-- only needed in sim -->

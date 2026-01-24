@@ -43,7 +43,7 @@
     </include> 
  
   <!-- launch 3D SE -->
-  <include file="/home/misys/aw_multimode_loc/src/ekf_localizer/launch/full_localization.launch.xml">
+  <include file="/home/misys/forza_ws/race_stack/state_estimation/src/ekf_localizer/launch/full_localization.launch.xml">
       <arg name="map_name" value="$(var map_name)" />
       <arg name="frenet_bool" value="True" />
   </include>
