@@ -109,19 +109,18 @@ def generate_launch_description():
         name='throttle_interpolator',
         parameters=[LaunchConfiguration('vesc_config')]
     )
-    # include urg_node2 launch file
-    launch_urg_node2 = IncludeLaunchDescription(
+
+
+    livox_rviz_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
-                get_package_share_directory('urg_node2'),
-                'launch/urg_node2.launch.py'))
+                get_package_share_directory('livox_ros_driver2'),
+                'launch_ROS2',
+                'rviz_MID360_launch.py'
+            )
+        )
     )
-    # urg_node = Node(
-    #     package='urg_node',
-    #     executable='urg_node_driver',
-    #     name='urg_node',
-    #     parameters=[LaunchConfiguration('sensors_config')]
-    # )
+
     ackermann_mux_node = Node(
         package='ackermann_mux',
         executable='ackermann_mux',
@@ -129,30 +128,29 @@ def generate_launch_description():
         parameters=[LaunchConfiguration('mux_config')],
         remappings=[('ackermann_cmd', 'drive')]
     )
-    static_tf_node = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='static_baselink_to_laser',
-        arguments=['0.27', '0.0', '0.11', '0.0', '0.0', '0.0', 'base_link', 'laser']
-    )
-    safety_node = Node(
-        package='safety_node',
-        executable='safety_node',
-        name='safety_node',
-        remappings=[('ego_racecar/odom', 'odom')]
-    )
+    
+
+    
+    #safety_node = Node(
+    #    package='safety_node',
+    #    executable='safety_node',
+    #    name='safety_node',
+    #    remappings=[('ego_racecar/odom', 'odom')]
+    #)
+
+
 
     # finalize
     ld.add_action(joy_node)
     ld.add_action(joy_teleop_node)
     ld.add_action(ackermann_to_vesc_node)
-    # ld.add_action(vesc_to_odom_node)
-    # ld.add_action(vesc_driver_node)
+    ld.add_action(vesc_to_odom_node)
+    ld.add_action(vesc_driver_node)
     # ld.add_action(throttle_interpolator_node)
-    # ld.add_action(launch_urg_node2)
-    # ld.add_action(urg_node)
-    # ld.add_action(ackermann_mux_node)
-    # ld.add_action(static_tf_node)
+    ld.add_action(livox_rviz_launch) # 3D 라이다 실행 추가
+
+
+    #ld.add_action(ackermann_mux_node)
     # ld.add_action(safety_node)
 
     return ld
