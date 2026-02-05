@@ -48,6 +48,8 @@
 
 #include "rclcpp/executors/single_threaded_executor.hpp"
 
+#include "latency_compensator.hpp"
+
 using namespace std::chrono_literals;
 
 class Controller : public rclcpp::Node {
@@ -78,6 +80,12 @@ public:
     rate_hz_ = 40.0;
     state_ = "GB_TRACK";
 
+    this->declare_parameter("delay_time", 0.05);
+        double delay_time = this->get_parameter("delay_time").as_double();
+    
+    compensator_ = std::make_unique<controller_utils::DelayCompensator>(
+        delay_time, 0.33, this->get_logger());
+
     // 퍼블리셔
     drive_pub_      = create_publisher<f110_msgs::msg::L1controllerControl>("/l1controller/control", 1);
     steering_pub_   = create_publisher<visualization_msgs::msg::Marker>("steering", 1);
@@ -86,6 +94,7 @@ public:
     waypoint_pub_   = create_publisher<visualization_msgs::msg::MarkerArray>("my_waypoints", 1);
     l1_dist_pub_    = create_publisher<geometry_msgs::msg::Point>("l1_distance", 1);
     gap_data_pub_   = create_publisher<f110_msgs::msg::PidData>("/trailing/gap_data", 1);
+    predicted_pub_  = create_publisher<visualization_msgs::msg::Marker>("/predicted_ghost_car", 1);
 
     // 모드에 따라 컨트롤러 초기화
     if (mode_ == "MAP") {
@@ -632,6 +641,39 @@ private:
     lookahead_pub_->publish(m);
   }
 
+  void publish_predicted_marker(double x, double y, double yaw) {
+    auto marker = visualization_msgs::msg::Marker();
+    
+    marker.header.frame_id = "map"; // 맵 좌표계 기준
+    marker.header.stamp = this->now();
+    marker.ns = "latency_prediction";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::ARROW; 
+    marker.action = visualization_msgs::msg::Marker::ADD;
+
+    marker.pose.position.x = x;
+    marker.pose.position.y = y;
+    marker.pose.position.z = 0.2; 
+
+    tf2::Quaternion q;
+    q.setRPY(0, 0, yaw);
+    marker.pose.orientation.x = q.x();
+    marker.pose.orientation.y = q.y();
+    marker.pose.orientation.z = q.z();
+    marker.pose.orientation.w = q.w();
+
+    marker.scale.x = 0.5; // 0.5m 길이
+    marker.scale.y = 0.1; // 두께
+    marker.scale.z = 0.1;
+
+    marker.color.a = 0.8; // 투명도 (0.0 ~ 1.0)
+    marker.color.r = 0.0;
+    marker.color.g = 1.0;
+    marker.color.b = 0.0;
+
+    predicted_pub_->publish(marker);
+}
+
   // -------------------- 메인 루프 --------------------
   void control_loop() {
     if (mode_ == "MAP" && map_controller_) {
@@ -648,41 +690,116 @@ private:
   }
 
   std::pair<double,double> map_cycle_() {
-    auto out = map_controller_->main_loop(
-      state_,
-      position_in_map_,                 // std::optional<std::array<double,3>>
-      waypoint_array_in_map_,          // std::vector<std::array<double,8>>
-      speed_now_.value_or(0.0),
-      opponent_,                       // std::optional<std::array<double,5>>
-      position_in_map_frenet_,         // std::optional<std::array<double,4>>
-      acc_now_,                        // std::vector<double> size 10
-      track_length_.value_or(0.0)
-    );
-    double speed = std::get<0>(out);
-    double steer = std::get<3>(out);
+    // -------------------------------------------------------------------------
+    // [Latency Compensation Logic Start]
+    // -------------------------------------------------------------------------
+    if (position_in_map_.has_value() && position_in_map_frenet_.has_value()) {
+      double cur_x   = position_in_map_->at(0);
+      double cur_y   = position_in_map_->at(1);
+      double cur_yaw = position_in_map_->at(2);
+      double cur_v   = speed_now_.value_or(0.0);
+      
+      double cur_s    = position_in_map_frenet_->at(0);
+      double cur_d    = position_in_map_frenet_->at(1);
+      double cur_epsi = position_in_map_frenet_->at(2);
 
-    waypoint_safety_counter_++;
-    return {speed, steer};
+      // 파라미터
+      double dt_control = 0.025; // 40Hz
+      double delay_time = this->get_parameter("delay_time").as_double(); // 현재 설정된 지연 시간
+
+      // DelayCompensator를 통해 지연 시간 후의 위치 계산
+      compensator_->set_delay(delay_time);
+      auto [fut_x, fut_y, fut_yaw, fut_v] = 
+          compensator_->compensate(cur_x, cur_y, cur_yaw, cur_v, dt_control);
+      publish_predicted_marker(fut_x, fut_y, fut_yaw);  
+      // s = s + v * delay
+      double fut_s = cur_s + (cur_v * delay_time);
+      double track_len = track_length_.value_or(1000.0);
+      if (fut_s > track_len) fut_s -= track_len;
+
+      // d = d + v * sin(heading_error) * delay (횡방향 에러 예측)
+      double fut_d = cur_d + (cur_v * std::sin(cur_epsi) * delay_time);
+
+      std::optional<std::array<double, 3>> future_pos = std::array<double, 3>{fut_x, fut_y, fut_yaw};
+      std::optional<std::array<double, 4>> future_frenet = std::array<double, 4>{
+          fut_s, fut_d, cur_epsi, position_in_map_frenet_->at(3)};
+
+      auto out = map_controller_->main_loop(
+        state_,
+        future_pos,                 // std::optional<std::array<double,3>>
+        waypoint_array_in_map_,          // std::vector<std::array<double,8>>
+        fut_v,
+        opponent_,                       // std::optional<std::array<double,5>>
+        future_frenet,         // std::optional<std::array<double,4>>
+        acc_now_,                        // std::vector<double> size 10
+        track_length_.value_or(0.0)
+      );
+      double speed = std::get<0>(out);
+      double steer = std::get<3>(out);
+
+      waypoint_safety_counter_++;
+      compensator_->update_queue(steer, speed, dt_control);
+      return {speed, steer};
+    }
+    return {0.0, 0.0};
   }
 
   std::pair<double,double> pp_cycle_() {
-    auto out = pp_controller_->main_loop(
-      state_,
-      position_in_map_,
-      waypoint_array_in_map_,
-      speed_now_.value_or(0.0),
-      opponent_,
-      position_in_map_frenet_,
-      acc_now_,
-      track_length_.value_or(0.0)
-    );
-    double speed = std::get<0>(out);
-    double steer = std::get<3>(out);
+    // -------------------------------------------------------------------------
+    // [Latency Compensation Logic Start]
+    // -------------------------------------------------------------------------
+    if (position_in_map_.has_value() && position_in_map_frenet_.has_value()) {
+      double cur_x   = position_in_map_->at(0);
+      double cur_y   = position_in_map_->at(1);
+      double cur_yaw = position_in_map_->at(2);
+      double cur_v   = speed_now_.value_or(0.0);
+      
+      double cur_s    = position_in_map_frenet_->at(0);
+      double cur_d    = position_in_map_frenet_->at(1);
+      double cur_epsi = position_in_map_frenet_->at(2);
 
+      // 파라미터
+      double dt_control = 0.025; // 40Hz
+      double delay_time = this->get_parameter("delay_time").as_double(); // 현재 설정된 지연 시간
 
-    set_lookahead_marker_(std::get<4>(out), /*id=*/201);
+      // DelayCompensator를 통해 지연 시간 후의 위치 계산
+      compensator_->set_delay(delay_time);
+      auto [fut_x, fut_y, fut_yaw, fut_v] = 
+          compensator_->compensate(cur_x, cur_y, cur_yaw, cur_v, dt_control);
+      publish_predicted_marker(fut_x, fut_y, fut_yaw);  
 
-    return {speed, steer};
+      // s = s + v * delay
+      double fut_s = cur_s + (cur_v * delay_time);
+      double track_len = track_length_.value_or(1000.0);
+      if (fut_s > track_len) fut_s -= track_len;
+
+      // d = d + v * sin(heading_error) * delay (횡방향 에러 예측)
+      double fut_d = cur_d + (cur_v * std::sin(cur_epsi) * delay_time);
+
+      std::optional<std::array<double, 3>> future_pos = std::array<double, 3>{fut_x, fut_y, fut_yaw};
+      std::optional<std::array<double, 4>> future_frenet = std::array<double, 4>{
+          fut_s, fut_d, cur_epsi, position_in_map_frenet_->at(3)
+      };
+  
+      auto out = pp_controller_->main_loop(
+        state_,
+        future_pos,                 // std::optional<std::array<double,3>>
+        waypoint_array_in_map_,          // std::vector<std::array<double,8>>
+        fut_v,
+        opponent_,                       // std::optional<std::array<double,5>>
+        future_frenet,         // std::optional<std::array<double,4>>
+        acc_now_,                        // std::vector<double> size 10
+        track_length_.value_or(0.0)
+      );
+      double speed = std::get<0>(out);
+      double steer = std::get<3>(out);
+
+      compensator_->update_queue(steer, speed, dt_control);
+      set_lookahead_marker_(std::get<4>(out), /*id=*/201);
+
+      return {speed, steer};
+    }
+    return {0.0, 0.0};  
   }
 
   std::pair<double,double> ftg_cycle_() {
@@ -758,13 +875,16 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr param_event_sub_;
-
+  
   sensor_msgs::msg::LaserScan::SharedPtr scan_;
 
   // 컨트롤러들
   std::unique_ptr<MAP_Controller> map_controller_;
   std::unique_ptr<PP_Controller>  pp_controller_;
   std::unique_ptr<FTG_Controller> ftg_controller_;
+  //지연 보상
+  std::unique_ptr<controller_utils::DelayCompensator> compensator_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr predicted_pub_;
 
   std::string l1_param_path_;
 

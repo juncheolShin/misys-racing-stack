@@ -19,6 +19,13 @@ find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 
+#--------------------- 지연 보상 hpp --------------------------
+include_directories(
+  include
+  ${rclcpp_INCLUDE_DIRS}
+  # ...
+)
+
 # -------------------- mux_controller 노드 --------------------
 add_executable(mux_controller
   src/mux_controller.cpp
@@ -49,6 +56,7 @@ add_executable(l1_controller
 
 target_include_directories(l1_controller PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../map/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../pp/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../ftg/include>

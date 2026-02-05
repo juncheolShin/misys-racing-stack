@@ -39,7 +39,7 @@ graph_planner:
     w_outer: 1.2
 
     max_heading_offset: 0.7853981633974483
-    map_name: "hall_1030"
+    map_name: "real_hall"
     csv_output_path: "/home/misys/forza_ws/race_stack/stack_master/maps/"
 
     ax_max: 3.8

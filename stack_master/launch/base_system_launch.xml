@@ -44,7 +44,7 @@
     </include>
 
     <!-- launch SE -->
-    <include file="$(find-pkg-share state_estimation)/launch/state_estimation_launch.xml">
+    <include file="$(find-pkg-share 2D_state_estimation)/launch/state_estimation_launch.xml">
       <arg name="racecar_version" value="$(var racecar_version)" />
       <arg name="mapping_bool" value="False" />
       <arg name="map_name" value="$(var map_name)" />

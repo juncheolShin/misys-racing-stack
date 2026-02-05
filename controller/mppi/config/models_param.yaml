@@ -1,0 +1,34 @@
+mppi_node:
+  ros__parameters:
+    #차량에 맞게 다시 세팅 필요
+    # Pacejka Magic Formula Parameters
+    # Front
+    Bf: 0.206   
+    Cf: 1.3    
+    Df: 17.6   
+
+    # Rear
+    Cr: 1.3
+    Dr: 16.4
+
+    m: 3.47
+    h: 0.074
+    Iz: 0.18195
+    lf: 0.15933
+    lr: 0.16067
+
+    car_l: 0.58
+    car_w: 0.24
+
+    s_min: -0.4189  
+    s_max: 0.4189   
+    sv_min: -3.2    
+    sv_max: 3.2
+    
+    v_min: 0.5      
+    v_max: 10.0 
+    
+    a_min: -9.0
+    a_max: 9.0
+
+    mu: 1.0489

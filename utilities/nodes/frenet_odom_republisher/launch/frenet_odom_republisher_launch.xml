@@ -1,7 +1,7 @@
 <launch>
 
   <!-- 1. EKF 필터 노드(state_estimation/ekf_launch.py) -->
-  <include file="$(find-pkg-share state_estimation)/launch/ekf_launch.py"> 
+  <include file="$(find-pkg-share 2D_state_estimation)/launch/ekf_launch.py"> 
     <!--인자 전달 -->
     <arg name="use_sim_time" value="true"/> 
   </include>

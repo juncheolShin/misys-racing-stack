@@ -4,6 +4,7 @@ USERNAME=$(whoami)
 USERNAME=$(whoami)
 USERNAME=$(whoami)
 USERNAME=$(whoami)
+USERNAME=$(whoami)
 # Setup permissions
 # USER="$(id -u -n)"
 sudo chown -R $USERNAME /home/misys/forza_ws/
