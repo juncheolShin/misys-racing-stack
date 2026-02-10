@@ -3,7 +3,7 @@ from config.dynamics_config import (
 )
 from config.model import DynamicBicycleModel
 from .solver import MPPISolver
-from .utils import calc_interpolated_reference_trajectory , jnp_to_np
+from .utils import jnp_to_np, calc_interpolated_reference_trajectory
 from config.config import MPCConfig
 import jax.numpy as jnp
 import numpy as np
@@ -44,6 +44,7 @@ class DynamicMPPIPlanner:
         params: DynamicsConfig = None,
         Q: np.ndarray = None,
         R: np.ndarray = None,
+        visualize: bool = False,
     ):
         """
         Args:
@@ -55,13 +56,14 @@ class DynamicMPPIPlanner:
             params (DynamicsConfig, optional): Vehicle parameters for the dynamic model. If none, uses default.
             Q (np.ndarray, optional): State cost matrix. If none, uses default.
             R (np.ndarray, optional): Control input cost matrix. If none, uses default.
+            visualize (bool, optional): If True, return NumPy trajectories for RViz. If False, skip expensive conversions.
 
         Returns:
-            target_speed: float
-            target_steering: float
-            opt_traj: np.ndarray [N+1, 7] (Optimal Trajectory)
-            sampled_trajs: np.ndarray [n_samples, N+1, 7] (Sampled Trajectories)
-            ref_traj: np.ndarray [N+1, 7] (Interpolated Reference Trajectory)
+            target_speed: float (DeviceArray)
+            target_steering: float (DeviceArray)
+            opt_traj: np.ndarray [N+1, 7] (Optimal Trajectory) or None
+            sampled_trajs: np.ndarray [n_samples, N+1, 7] or None
+            ref_traj: np.ndarray [N+1, 7] or None
         """
         if waypoints is not None:
             if waypoints.shape[1] < 3 or len(waypoints.shape) != 2:
@@ -93,6 +95,9 @@ class DynamicMPPIPlanner:
                     f"R must be of shape {self.solver.config.R.shape}, got {R.shape}"
                 )
 
+        import time as _time
+        _t_plan_start = _time.time()
+
         x = state[0]
         y = state[1]
         v = state[3]
@@ -100,76 +105,147 @@ class DynamicMPPIPlanner:
         # x0 of shape (nx,)
         x0 = np.array([x, y, state[2], v, yaw, state[5], state[6]])
 
+        N = self.solver.config.N
+        dt = self.solver.config.dt
+
+        _t0 = _time.time()
+
         # --- Convert raw waypoints [x, y, psi, kappa, v, s] to full state reference ---
-        # DynamicBicycleModel state: [x, y, delta, v, yaw, yaw_rate, slip_angle]
-        
         wx = self.waypoints[:, 0]
         wy = self.waypoints[:, 1]
         wpsi = self.waypoints[:, 2]
         wkappa = self.waypoints[:, 3]
         wv = self.waypoints[:, 4]
-        ws = self.waypoints[:, 5] # Progress (s), used for MPCC cost later
 
         # Calculate derived states
         L = self.params.WHEELBASE
-        wdelta = np.arctan(L * wkappa)  
-        wyaw_rate = wv * wkappa         
+        wdelta = np.arctan(L * wkappa)
+        wyaw_rate = wv * wkappa
         wbeta = np.zeros_like(wv)
 
-        # Construct 7D reference trajectory [N, 7]
-        # Order: x, y, delta, v, yaw, yaw_rate, beta
+        # Construct full reference from incoming waypoint list
         full_ref_waypoints = np.stack([wx, wy, wdelta, wv, wpsi, wyaw_rate, wbeta], axis=1)
 
-        # Interpolate based on current position
-        self.ref_traj = calc_interpolated_reference_trajectory(
-            x,
-            y,
-            yaw,
-            wx, 
-            wy,
-            wv, 
-            self.solver.config.dt,
-            self.solver.config.N,
-            full_ref_waypoints
-        ).T.copy()
-        p = None
-        if params is not None:
-            p = self.model.parameters_vector_from_config(params)
-            self.params = params
+        _t1 = _time.time()
+
+        # --- Time-indexed reference: interpolate exactly N+1 points at dt spacing ---
+        # Uses velocity-based arc-length interpolation from utils.py
+        ref_interp = calc_interpolated_reference_trajectory(
+            x, y, yaw,
+            wx, wy, wv,
+            dt, N,
+            full_ref_waypoints,
+        )
+        # ref_interp shape: (N+1, 7) — includes current position as [0]
+        # Solver expects (N, 7) — one ref per horizon step, skip the first (current)
+        self.ref_traj = np.asarray(ref_interp[1:N+1]).copy()  # (N, 7)
+
+        _t2 = _time.time()
+
+        # Cache the dynamics parameter vector to avoid recomputing every tick
+        if not hasattr(self, '_cached_p') or self._cached_params_id is not params:
+            p_np = self.model.parameters_vector_from_config(params) if params is not None else None
+            self._cached_p = jnp.asarray(p_np) if p_np is not None else None
+            self._cached_params_id = params
+            if params is not None:
+                self.params = params
+        else:
+            pass
+        p = self._cached_p
 
         if self.pre_processing_fn is not None:
             x0, self.ref_traj = self.pre_processing_fn(x0, self.ref_traj)
 
-        # Solve MPPI
-        # self.solver.samples contains (a_sampled, s_sampled, r_sampled)
-        self.x_pred, self.u_pred = self.solver.solve(x0, self.ref_traj, p=p, Q=Q, R=R, vis=True)
-        
-        self.x_pred = jnp_to_np(self.x_pred)
-        self.u_pred = jnp_to_np(self.u_pred)
-        
-        # Transpose x_pred to [N+1, 7] for visualization (Solver returns [7, N+1])
-        self.x_pred = self.x_pred.T
-        
-        # Get sampled trajectories for visualization (s_sampled)
-        # s_sampled shape: [n_samples, N, nx] -> need to check solver output
-        # solver.samples[1] is s_sampled
-        s_sampled = jnp_to_np(self.solver.samples[1])
-        
-        self.local_plan = self.ref_traj[:2].T
-        # control_solution stores (x, y) path. x_pred is now [N+1, 7], so take all rows, first 2 cols, then transpose to [2, N+1] if needed or keep as path
-        # Usually control_solution is expected as [2, N] or [N, 2]. Let's keep it consistent with previous logic but adapted to transposed x_pred.
-        # Previous: x_pred[:2, :] -> [2, N+1]. 
-        # Current x_pred is [N+1, 7]. So x_pred[:, :2].T -> [2, N+1]
-        self.control_solution = np.array(self.x_pred[:, :2]).T
-        
-        # Calculate target velocity and steering angle from control inputs (accel, steering_rate)
-        # [Revert] Use the first optimal step (Index 1) directly
-        # The user will handle delay compensation externally.
-        target_speed = self.x_pred[1, 3] # 3 is velocity index
-        target_steering = self.x_pred[1, 2] # 2 is steering index
+        _t3 = _time.time()
 
-        # Clip control targets to vehicle limits
-        target_steering = np.clip(target_steering, self.params.MIN_STEER, self.params.MAX_STEER)
-        target_speed = np.clip(target_speed, self.params.MIN_SPEED, self.params.MAX_SPEED)
-        
-        return target_speed, target_steering, self.x_pred, s_sampled, self.ref_traj.T
+        # Solve MPPI with wheelbase from dynamics params
+        wheelbase = self.params.LF + self.params.LR
+
+        # Pre-convert ref_traj to JAX DeviceArray once (avoid repeated jnp.array in solve)
+        jax_ref = jnp.asarray(self.ref_traj)
+        jax_x0 = jnp.asarray(x0)
+
+        # Pre-convert Q, R to JAX if they are NumPy (cache to avoid per-tick conversion)
+        if Q is not None:
+            if not hasattr(self, '_jax_Q_cache') or self._jax_Q_src is not Q:
+                self._jax_Q_cache = jnp.asarray(Q)
+                self._jax_Q_src = Q
+            jax_Q = self._jax_Q_cache
+        else:
+            jax_Q = None
+
+        if R is not None:
+            if not hasattr(self, '_jax_R_cache') or self._jax_R_src is not R:
+                self._jax_R_cache = jnp.asarray(R)
+                self._jax_R_src = R
+            jax_R = self._jax_R_cache
+        else:
+            jax_R = None
+
+        self.x_pred, self.u_pred = self.solver.solve(
+            jax_x0, jax_ref, p=p, Q=jax_Q, R=jax_R, vis=visualize, wheelbase=wheelbase
+        )
+
+        _t4 = _time.time()
+
+        # ---- Outputs ----
+        # Return the first control step as 1-D DeviceArray [steer, speed].
+        # Scalar indexing like u_pred[0, 0] triggers GPU sync;
+        # slicing u_pred[0] returns a DeviceArray (no sync) and we let
+        # the caller's float() be the single sync point.
+        u_first = self.u_pred[0]            # shape (nu,), still DeviceArray
+        target_steering_raw = u_first[0]    # scalar DeviceArray (lazy, no sync yet)
+        target_speed_raw = u_first[1]       # scalar DeviceArray (lazy, no sync yet)
+
+        _t5 = _time.time()
+
+        # Detailed timing (throttled via caller)
+        _ref_build = (_t1 - _t0) * 1000.0
+        _crop_pad = (_t2 - _t1) * 1000.0
+        _cache = (_t3 - _t2) * 1000.0
+        _solve = (_t4 - _t3) * 1000.0
+        _index = (_t5 - _t4) * 1000.0
+        _total_plan = (_t5 - _t_plan_start) * 1000.0
+        if not hasattr(self, '_plan_profile_counter'):
+            self._plan_profile_counter = 0
+        self._plan_profile_counter += 1
+        if self._plan_profile_counter % 40 == 0:  # Print every 1 second at 40Hz
+            print(f"[PlanProfile] ref_build={_ref_build:.2f}ms | crop_pad={_crop_pad:.2f}ms | cache={_cache:.2f}ms | solve={_solve:.2f}ms | index={_index:.2f}ms | total={_total_plan:.2f}ms", flush=True)
+
+        if not visualize:
+            return target_speed_raw, target_steering_raw, None, None, None
+
+        # Convert trajectories to NumPy for visualization/publishing markers.
+        x_pred_np = jnp_to_np(self.x_pred)
+
+        # Some solver configurations may return an extra batch dimension.
+        # Normalize to x_pred_np shape (N, 7).
+        if x_pred_np.ndim == 3:
+            x_pred_np = x_pred_np[0]
+
+        # Normalize x_pred to (N, 7)
+        if x_pred_np.ndim == 2 and x_pred_np.shape[0] == 7:
+            x_pred_np = x_pred_np.T
+
+        # Solver returns states for N steps; visualization expects (N+1, 7) including x0.
+        x0_np = np.asarray(x0).reshape(1, -1)
+        opt_traj = np.concatenate([x0_np, x_pred_np], axis=0)
+
+        # Sampled trajectories for visualization.
+        s_sampled_np = jnp_to_np(self.solver.samples[1])
+        if s_sampled_np.ndim == 3 and s_sampled_np.shape[-1] == 7:
+            sampled_trajs = np.concatenate(
+                [np.repeat(x0_np[None, ...], s_sampled_np.shape[0], axis=0), s_sampled_np],
+                axis=1,
+            )
+        else:
+            sampled_trajs = s_sampled_np
+
+        # Reference trajectory visualization: ref_traj is now exactly (N, 7), no padding.
+        ref_np = np.asarray(self.ref_traj)
+        ref_traj_vis = np.concatenate([x0_np, ref_np], axis=0)
+
+        self.local_plan = ref_traj_vis[:, :2]
+        self.control_solution = np.array(opt_traj[:, :2]).T
+
+        return target_speed_raw, target_steering_raw, opt_traj, sampled_trajs, ref_traj_vis

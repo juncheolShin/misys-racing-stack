@@ -87,11 +87,11 @@ class DelayCompensator:
         diff_dist = math.sqrt((pred_x - x)**2 + (pred_y - y)**2)
         diff_yaw = pred_yaw - yaw
         
-        if self.logger is not None:
-            self.logger.info(
-                f"[DelayComp] Delay: {self.delay_time:.3f}s | Comp_Dist: {diff_dist:.3f}m | Comp_Yaw: {diff_yaw:.3f}rad",
-                throttle_duration_sec=1.0
-            )
+        # if self.logger is not None:
+        #     self.logger.info(
+        #         f"[DelayComp] Delay: {self.delay_time:.3f}s | Comp_Dist: {diff_dist:.3f}m | Comp_Yaw: {diff_yaw:.3f}rad",
+        #         throttle_duration_sec=1.0
+        #     )
         
         return (pred_x, pred_y, pred_yaw, pred_v)
     

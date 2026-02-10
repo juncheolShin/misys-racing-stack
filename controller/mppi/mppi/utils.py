@@ -12,37 +12,39 @@ import numpy as np
 from numba import njit
 
 
-@njit(cache=True)
+import jax.numpy as jnp
+
 def nearest_point(point, trajectory):
     """
     Return the nearest point along the given piecewise linear trajectory.
 
     Args:
-        point (numpy.ndarray, (2, )): (x, y) of current pose
-        trajectory (numpy.ndarray, (N, 2)): array of (x, y) trajectory waypoints
-            NOTE: points in trajectory must be unique. If they are not unique, a divide by 0 error will destroy the world
+        point (jax.numpy.ndarray, (2, )): (x, y) of current pose
+        trajectory (jax.numpy.ndarray, (N, 2)): array of (x, y) trajectory waypoints
 
     Returns:
-        nearest_point (numpy.ndarray, (2, )): nearest point on the trajectory to the point
+        nearest_point (jax.numpy.ndarray, (2, )): nearest point on the trajectory to the point
         nearest_dist (float): distance to the nearest point
         t (float): nearest point's location as a segment between 0 and 1 on the vector formed by the closest two points on the trajectory. (p_i---*-------p_i+1)
         i (int): index of nearest point in the array of trajectory waypoints
     """
-    diffs = (trajectory[1:, :] - trajectory[:-1, :]).astype(np.float32)
-    l2s = diffs[:, 0] ** 2 + diffs[:, 1] ** 2
-    dots = np.empty((trajectory.shape[0] - 1,))
-    for i in range(dots.shape[0]):
-        lhs = (point - trajectory[i, :]).astype(np.float32)
-        dots[i] = np.dot(lhs, diffs[i, :])
-    t = dots / np.maximum(l2s, 1e-6) # Avoid division by zero
-    t[t < 0.0] = 0.0
-    t[t > 1.0] = 1.0
-    projections = trajectory[:-1, :] + (t * diffs.T).T
-    dists = np.empty((projections.shape[0],))
-    for i in range(dists.shape[0]):
-        temp = point - projections[i]
-        dists[i] = np.sqrt(np.sum(temp * temp))
-    min_dist_segment = np.argmin(dists)
+    # Check if trajectory is empty
+    if trajectory.shape[0] == 0:
+        return jnp.array([0.0, 0.0]), jnp.inf, 0.0, -1
+
+    diffs = trajectory[1:, :] - trajectory[:-1, :]
+    l2s = jnp.sum(diffs**2, axis=1)
+    dots = jnp.sum((point - trajectory[:-1, :]) * diffs, axis=1)
+    t = dots / jnp.maximum(l2s, 1e-6)  # Avoid division by zero
+    t = jnp.clip(t, 0.0, 1.0)
+    projections = trajectory[:-1, :] + t[:, None] * diffs
+    dists = jnp.linalg.norm(projections - point, axis=1)
+
+    # Check if dists is empty
+    if dists.shape[0] == 0:
+        return jnp.array([0.0, 0.0]), jnp.inf, 0.0, -1
+
+    min_dist_segment = jnp.argmin(dists)
     return (
         projections[min_dist_segment],
         dists[min_dist_segment],
@@ -71,7 +73,8 @@ def calc_ref_trajectory_indices(x, y, cx, cy, v, dt, N):
     ncourse = len(cx)
 
     # Find nearest index/setpoint from where the trajectories are calculated
-    _, _, _, ind = nearest_point(np.array([x, y]), np.array([cx, cy]).T)
+    dists_sq = (cx - x)**2 + (cy - y)**2
+    ind = int(np.argmin(dists_sq))
 
     # based on current velocity, distance traveled on the ref line between time steps
     travel = abs(v) * dt
@@ -108,11 +111,23 @@ def calc_interpolated_reference_trajectory(
     dl = np.linalg.norm(np.array([cx[1], cy[1]]) - np.array([cx[0], cy[0]]))
     dl = max(dl, 1e-6) # Avoid division by zero
 
-    # Find the index closest to the current position and the interpolator t \in [0, 1]
-    _, _, t_current, ind_current = nearest_point(np.array([x, y]), np.array([cx, cy]).T)
-
     # Find the total number of waypoints in the reference trajectory
     ncourse = len(cx)
+
+    # --- Pure NumPy nearest-point search (no JAX, no GPU sync) ---
+    # 1. Find nearest waypoint index via squared-distance argmin
+    dists_sq = (cx - x)**2 + (cy - y)**2
+    ind_current = int(np.argmin(dists_sq))
+
+    # 2. Project onto the nearest segment to get fractional t ∈ [0, 1]
+    p0 = np.array([cx[ind_current], cy[ind_current]])
+    p1 = np.array([cx[(ind_current + 1) % ncourse], cy[(ind_current + 1) % ncourse]])
+    seg = p1 - p0
+    seg_len_sq = np.dot(seg, seg)
+    if seg_len_sq < 1e-12:
+        t_current = 0.0
+    else:
+        t_current = float(np.clip(np.dot(np.array([x, y]) - p0, seg) / seg_len_sq, 0.0, 1.0))
 
     # start from the velocity at the current index, calculate next point,
     # interpolate linearly the speed and then use that speed to get next point,
@@ -137,17 +152,18 @@ def calc_interpolated_reference_trajectory(
 
     if is_closed:
         # Modulo the indices to wrap around the reference trajectory
-        ind_list = ind_list % ncourse
+        ind_list = ind_list.astype(int) % ncourse
         next_ind_list = (ind_list + 1) % ncourse
         t_list = t_list % 1.0
     else:
-        # For open paths (local waypoints), clamp to the last segment
-        # If index exceeds bounds, stay at the last valid segment
-        ind_list = np.minimum(ind_list, ncourse - 2)
+        # For open paths (local waypoints), clamp to valid range [0, ncourse-2]
+        ind_list = np.clip(ind_list.astype(int), 0, ncourse - 2)
         next_ind_list = ind_list + 1
-        # If we are past the end, t should be 1.0 (stay at end point)
-        t_list[t_list.astype(int) + ind_current >= ncourse - 1] = 1.0
         t_list = t_list % 1.0
+
+    # Ensure integer indices for array indexing
+    ind_list = ind_list.astype(int)
+    next_ind_list = next_ind_list.astype(int)
 
     # Get the previous point and the next point to interpolate with
     prev_states = reference_trajectory[ind_list, :]
@@ -434,3 +450,54 @@ def jnp_to_np(jnp_array):
     Converts a jax numpy array to a numpy array
     """
     return np.array(jax.device_get(jnp_array))
+
+
+def calculate_pp_steering(pose, target_point, wheelbase, lookahead_dist=1.0):
+    """
+    Pure Pursuit steering control law (JAX-compatible).
+    Computes desired steering angle to track a target point.
+    
+    [최적화] GPU-native calculation - no map lookups, only geometry
+    
+    Args:
+        pose: Current pose [x, y, yaw] (rad)
+        target_point: Target waypoint [x, y]
+        wheelbase: Vehicle wheelbase L (meters)
+        lookahead_dist: Lookahead distance for PP law (default 1.0m)
+    
+    Returns:
+        steering: Desired steering angle (rad), clipped to valid range
+    
+    Theory:
+        Pure Pursuit steering law:
+        delta = arctan(2 * L * sin(alpha) / lookahead_dist)
+        where:
+        - L = wheelbase
+        - alpha = heading error = desired_heading - current_yaw
+        - lookahead_dist = distance to lookahead point (1m typical)
+    """
+    import jax.numpy as jnp
+    
+    # Extract pose
+    x_curr = pose[..., 0]
+    y_curr = pose[..., 1]
+    yaw_curr = pose[..., 2]
+    
+    # Vector from current position to target
+    dx = target_point[..., 0] - x_curr
+    dy = target_point[..., 1] - y_curr
+    
+    # Desired heading (angle to target)
+    desired_heading = jnp.arctan2(dy, dx)
+    
+    # Heading error (normalize to [-pi, pi])
+    alpha = desired_heading - yaw_curr
+    alpha = jnp.arctan2(jnp.sin(alpha), jnp.cos(alpha))
+    
+    # Pure Pursuit steering law
+    # delta = arctan(2*L*sin(alpha) / lookahead_dist)
+    # Clamp lookahead to avoid division issues
+    lookahead_safe = jnp.maximum(lookahead_dist, 1e-6)
+    steering = jnp.arctan((2.0 * wheelbase * jnp.sin(alpha)) / lookahead_safe)
+    
+    return steering

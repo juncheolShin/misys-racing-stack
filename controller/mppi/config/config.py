@@ -92,13 +92,6 @@ class MPPIConfig(MPCConfig):
     scan: bool = field(default=True)
     adaptive_covariance: bool = field(default=False)
     delay_time: float = field(default=0.05)
-    
-    # Guided Sampling 파라미터
-    guided_ratio: float = field(default=0.6)           # Guided 샘플 비율 (0.6 = 60%)
-    guided_steer_gain: float = field(default=4.0)      # Guided Steering Gain
-    guided_std_scale: float = field(default=0.3)       # Guided 샘플 분산 스케일
-
-    exploration_std_scale: float = field(default=1.5)  # Exploration 샘플 분산 스케일
 
     def __post_init__(self):
         super().__post_init__()

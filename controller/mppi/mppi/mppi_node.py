@@ -1,6 +1,7 @@
 import os
 os.environ['JAX_PLATFORM_NAME'] = 'gpu'
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = ".60"
 
 import rclpy
 from rclpy.node import Node
@@ -52,9 +53,17 @@ class MPPINode(Node):
         
         if self.dynamics_params is None or self.mppi_config is None:
             raise ValueError("Something went wrong while loading parameters.")
-        else:
-            # Initialize Planner with explicit kwargs
-            self.planner = DynamicMPPIPlanner(config=self.mppi_config, params=self.dynamics_params)
+        
+        # [수정] Model 객체 생성 (planner 초기화 전에!)
+        from config.model import DynamicBicycleModel
+        self.model = DynamicBicycleModel(self.dynamics_params)
+        
+        # Initialize Planner with explicit kwargs (이제 model이 준비됨)
+        self.planner = DynamicMPPIPlanner(
+            config=self.mppi_config, 
+            params=self.dynamics_params,
+            model=self.model  # ← model 추가
+        )
 
         # --- JAX/Numba Warmup ---
         self.get_logger().info("Compiling JAX/Numba functions (Warmup) will happen after Map is received.")
@@ -146,14 +155,20 @@ class MPPINode(Node):
             {'name': 'max_speed', 'default': 20.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE)},
             {'name': 'min_speed', 'default': 0.5, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE)},
             {'name': 'adaptive_covariance', 'default': True, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL)},
-            {'name': 'scan', 'default': False, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL)},
+            {'name': 'scan', 'default': True, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL)},
             {'name': 'delay_time', 'default': 0.05, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0, to_value=1.0, step=0.01)])},
             
-            # --- Guided Sampling ---
-            {'name': 'guided_ratio', 'default': 0.6, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0, to_value=1.0, step=0.1)])},
-            {'name': 'guided_steer_gain', 'default': 4.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0, to_value=20.0, step=0.1)])},
-            {'name': 'guided_std_scale', 'default': 0.3, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.1, to_value=2.0, step=0.1)])},
-            {'name': 'exploration_std_scale', 'default': 1.5, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.5, to_value=3.0, step=0.1)])},
+            # --- Debug / Visualization ---
+            {
+                'name': 'enable_visualization',
+                'default': False,
+                'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL),
+            },
+            {
+                'name': 'profile_plan_breakdown',
+                'default': True,
+                'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL),
+            },
         ]
 
         for param in param_dicts:
@@ -275,12 +290,6 @@ class MPPINode(Node):
             adaptive_covariance=get_val('adaptive_covariance'),
             scan=get_val('scan'),
             delay_time=get_val('delay_time'),
-            
-            # Guided Sampling
-            guided_ratio=get_val('guided_ratio'),
-            guided_steer_gain=get_val('guided_steer_gain'),
-            guided_std_scale=get_val('guided_std_scale'),
-            exploration_std_scale=get_val('exploration_std_scale')
         )
 
     def _perform_warmup(self):
@@ -419,7 +428,7 @@ class MPPINode(Node):
                  self.planner.solver.set_map(self.map_data_jax, self.map_metadata)
             
             # Publish cost map for RViz visualization
-            self.publish_costmap()
+            #self.publish_costmap()
             
             # Trigger Warmup if not done yet
             if not self.is_warmed_up:
@@ -472,52 +481,68 @@ class MPPINode(Node):
         if self.local_waypoints is None:
             return
 
-        dt = self.mppi_config.dt  # Control period
-        
-        # --- Delay Compensation: Predict future state ---
+        dt = self.mppi_config.dt
+
         pred_x, pred_y, pred_yaw, pred_v = self.delay_compensator.compensate(
             self.x, self.y, self.yaw, self.v, dt
         )
-        
-        # Construct state vector with COMPENSATED state: [x, y, delta, v, yaw, yaw_rate, beta]
+
         state = [pred_x, pred_y, self.steering_angle, pred_v, pred_yaw, self.yaw_rate, self.beta]
-        
-        start_time = time.time()
-        # Run Planner with CURRENT config (Q, R, params)
-        # Fix: Previously Q, R, params were not passed, so solver used initial values!
-        target_speed, target_steering, opt_traj, sampled_trajs, ref_traj = self.planner.plan(
+
+        enable_vis = bool(self.get_parameter('enable_visualization').value)
+        do_profile = bool(self.get_parameter('profile_plan_breakdown').value)
+
+        # Visualization at reduced rate (5 Hz) to avoid GPU sync every tick
+        self._vis_counter = getattr(self, '_vis_counter', 0) + 1
+        do_vis_this_tick = enable_vis and (self._vis_counter % 8 == 0)  # 40Hz / 8 = 5Hz
+
+        t0 = time.time()
+        target_speed_raw, target_steering_raw, opt_traj, sampled_trajs, ref_traj = self.planner.plan(
             state=state,
             waypoints=self.local_waypoints,
             params=self.dynamics_params,
             Q=self.mppi_config.Q,
-            R=self.mppi_config.R
+            R=self.mppi_config.R,
+            visualize=do_vis_this_tick,
         )
+        t1 = time.time()
 
-        end_time = time.time()
-        compute_time = (end_time - start_time) * 1000.0 # ms
-        
-        # --- Update Delay Compensator with new command ---
+        # [Blocking 지점] 여기서만 GPU→CPU 동기화 발생
+        t_convert_start = time.time()
+        target_speed = float(target_speed_raw)
+        target_steering = float(target_steering_raw)
+        t2 = time.time()
+
+        plan_time = (t1 - t0) * 1000.0
+        t_convert = (t2 - t_convert_start) * 1000.0
+
+        if do_profile:
+            # If plan() returns DeviceArrays, nothing forces GPU sync until float().
+            # This print helps verify whether the "gap" is actually JAX async work being waited on at conversion.
+            self.get_logger().info(
+                f"[ProfileBreakdown] plan()={plan_time:.2f}ms | convert(float)={t_convert:.2f}ms | total={(t2 - t0)*1000.0:.2f}ms",
+                throttle_duration_sec=1.0,
+            )
+
+        # Clipping
+        target_steering = np.clip(target_steering, self.dynamics_params.MIN_STEER, self.dynamics_params.MAX_STEER)
+        target_speed = np.clip(target_speed, self.dynamics_params.MIN_SPEED, self.dynamics_params.MAX_SPEED)
+
+        # Update delay compensator
         self.delay_compensator.update_queue(target_steering, target_speed, dt)
-        
-        # Update internal steering state (simple delay model)
         self.steering_angle = target_steering
 
-        # Debug Logging (1초에 한 번씩 출력)
-        self.get_logger().info(
-            f"Target Speed: {target_speed:.2f} m/s, Steer: {target_steering:.2f} rad, Time: {compute_time:.2f} ms", 
-            throttle_duration_sec=5.0
-        )
-
-        # Publish Drive Command
+        # Publish
         drive_msg = AckermannDriveStamped()
         drive_msg.header.stamp = self.get_clock().now().to_msg()
         drive_msg.header.frame_id = "base_link"
-        drive_msg.drive.steering_angle = target_steering    
+        drive_msg.drive.steering_angle = target_steering
         drive_msg.drive.speed = target_speed
         self.drive_pub.publish(drive_msg)
 
-        # Publish Visualization
-        self.publish_visualization(opt_traj, sampled_trajs, ref_traj)
+        # Publish Visualization (only on vis ticks — 5Hz)
+        if do_vis_this_tick and opt_traj is not None and sampled_trajs is not None and ref_traj is not None:
+            self.publish_visualization(opt_traj, sampled_trajs, ref_traj)
 
     def publish_visualization(self, opt_traj, sampled_trajs, ref_traj):
         marker_array = MarkerArray()
@@ -628,17 +653,12 @@ class MPPINode(Node):
             msg.info.origin.position.y = self.track_sdf.min_y
             msg.info.origin.position.z = 0.0
             
-            # Convert cost map to occupancy values (0-100)
-            # cost_map: shape (W, H), need to transpose to (H, W) for row-major
+            # Convert binary cost map to occupancy values
+            # cost_map: shape (W, H), transpose to (H, W) for row-major OccupancyGrid
             cost_map_np = np.array(self.track_sdf.cost_map.T)  # (H, W)
             
-            # Normalize: 0 = free (low cost), 100 = occupied (high cost)
-            # Clip cost to [0, 10] for visualization
-            cost_clipped = np.clip(cost_map_np, 0, 10)
-            occupancy = (cost_clipped / 10.0 * 100).astype(np.int8)
-            
-            # Collision areas = 100
-            occupancy[cost_map_np >= 10000] = 100
+            # Binary: 0.0=free → 0, 1.0=wall → 100
+            occupancy = (cost_map_np * 100).astype(np.int8)
             
             # Flatten to row-major (RViz expects this)
             msg.data = occupancy.flatten().tolist()
@@ -646,72 +666,8 @@ class MPPINode(Node):
             self.costmap_pub.publish(msg)
             self.get_logger().info(f"[CostMap] Published {msg.info.width}x{msg.info.height} occupancy grid")
             
-            # Publish Flow Map Vectors (Subsampled)
-            # self.publish_flow_markers()
-            
         except Exception as e:
             self.get_logger().error(f"Failed to publish cost map: {e}")
-
-    def publish_flow_markers(self):
-        """
-        Publish Flow Map as a vector field (MarkerArray)
-        """
-        if self.track_sdf is None or not hasattr(self.track_sdf, 'flow_map_x'):
-            return
-            
-        try:
-            marker_array = MarkerArray()
-            
-            # Subsample for visualization (e.g., every 5th cell)
-            step = 5
-            W, H = self.track_sdf.width_cells, self.track_sdf.height_cells
-            
-            idx = 0
-            for i in range(0, W, step):
-                for j in range(0, H, step):
-                    # Get flow vector
-                    fx = self.track_sdf.flow_map_x[i, j]
-                    fy = self.track_sdf.flow_map_y[i, j]
-                    
-                    # Skip if zero vector (if any) or if outside drivable (high cost)
-                    cost = self.track_sdf.cost_map[i, j]
-                    if cost > 100.0: # Skip walls
-                        continue
-                        
-                    # Calculate position
-                    x = self.track_sdf.min_x + i * self.track_sdf.resolution
-                    y = self.track_sdf.min_y + j * self.track_sdf.resolution
-                    
-                    marker = Marker()
-                    marker.header.frame_id = "map"
-                    marker.header.stamp = self.get_clock().now().to_msg()
-                    marker.ns = "flow_field"
-                    marker.id = idx
-                    idx += 1
-                    marker.type = Marker.ARROW
-                    marker.action = Marker.ADD
-                    
-                    # Arrow start and end
-                    p1 = Point(x=x, y=y, z=0.1)
-                    p2 = Point(x=x + fx * 0.3, y=y + fy * 0.3, z=0.1) # Scale arrow
-                    marker.points = [p1, p2]
-                    
-                    marker.scale.x = 0.05 # Shaft diameter
-                    marker.scale.y = 0.1  # Head diameter
-                    marker.scale.z = 0.1  # Head length
-                    
-                    marker.color.a = 0.5
-                    marker.color.r = 1.0
-                    marker.color.g = 1.0
-                    marker.color.b = 0.0
-                    
-                    marker_array.markers.append(marker)
-                    
-            self.vis_pub.publish(marker_array)
-            self.get_logger().info(f"[FlowMap] Published {len(marker_array.markers)} flow vectors")
-            
-        except Exception as e:
-            self.get_logger().error(f"Failed to publish flow markers: {e}")
 
 def main(args=None):
     rclpy.init(args=args)

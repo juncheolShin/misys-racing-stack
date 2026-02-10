@@ -2,13 +2,13 @@ mppi_node:
   ros__parameters:
     nx: 7 #[x, y, delta, v, yaw, yaw_rate, beta]
     nu: 2 #[steering_angle, velocity] - Now absolute targets, not rates
-    dt: 0.025                 # time step
-    predictive_horizon: 40   # N
+    dt: 0.1                 # time step
+    predictive_horizon: 10   # N
 
-    n_samples: 4096         # 파티클 개수
+    n_samples: 1024         # 파티클 개수
     n_iterations: 1          # 최적화 반복 횟수
-    temperature: 0.001        # Lambda: 낮을수록 최적해에 민감 
-    gamma: 0.1              # Damping
+    temperature: 0.01        # Lambda: 낮을수록 최적해에 민감 
+    gamma: 0.001              # Damping
     
     adaptive_covariance: false # 공분산 적응형 업데이트 사용 여부
     scan: true               # JAX scan 사용 여부 
@@ -16,23 +16,18 @@ mppi_node:
 
     # 샘플링 표준편차 [Steering Angle (rad), Velocity (m/s)]
     # Now control is (delta, v) not (ddelta, accel)
-    sampling_std: [0.5, 3.0] 
+    sampling_std: [1.0, 1.0] 
 
-    weight_contour: 10.0    # w_c: 경로 이탈 방지 
-    weight_progress: 2.0    # w_p: 전진 보상 
+    weight_contour: 2.0    # w_c: 경로 이탈 방지 
+    weight_progress: 1.0    # w_p: 전진 보상 
     
     weight_slip: 0.001     
 
     weight_steer: 0.1        # 핸들 조향 비용 (Absolute)
     weight_accel: 0.001      # 가속/감속 비용 
     
-    weight_steer_rate: 2.0    # 핸들 급조작 비용 (Damping Oscillation)
+    weight_steer_rate: 0.1    # 핸들 급조작 비용 (Damping Oscillation)
     weight_accel_rate: 0.01  
     
     terminal_weight_mult: 1.0 # 종단 비용 가중치 
     
-    # Guided Sampling 파라미터
-    guided_ratio: 0.4              # Guided 샘플 비율 (0.6 = 60%)
-    guided_steer_gain: 2.0         # Guided Steering Gain (K_steer in solver)
-    guided_std_scale: 0.3          # Guided 샘플 분산 스케일 (작게 = 촘촘)
-    exploration_std_scale: 1.5     # Exploration 샘플 분산 스케일 (크게 = 넓게)

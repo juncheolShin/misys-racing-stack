@@ -25,7 +25,7 @@ class RealisticLatencyTester(Node):
         self.all_data = []        # CSV 저장용 전체 데이터 (계속 쌓음)
         self.start_time = time.time()
         
-        self.filename = 'latency_result.csv'
+        self.filename = 'latency_result_with_other_process.csv'
         self.get_logger().info(f"측정 시작! 종료 시 {self.filename}에 저장됩니다.")
 
     def timer_callback(self):

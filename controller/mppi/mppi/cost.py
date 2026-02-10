@@ -1,81 +1,85 @@
 import jax.numpy as jnp
-import jax.debug
+import jax
 
-def interpolate_2d(grid, x_idx, y_idx):
-    """
-    Bilinear interpolation for 2D grid.
-    x_idx, y_idx: float indices
-    """
-    x0 = jnp.floor(x_idx).astype(int)
-    x1 = x0 + 1
-    y0 = jnp.floor(y_idx).astype(int)
-    y1 = y0 + 1
-    
-    # Clip to bounds
-    h, w = grid.shape
-    x0 = jnp.clip(x0, 0, h - 1)
-    x1 = jnp.clip(x1, 0, h - 1)
-    y0 = jnp.clip(y0, 0, w - 1)
-    y1 = jnp.clip(y1, 0, w - 1)
-    
-    # Values
-    Ia = grid[x0, y0]
-    Ib = grid[x0, y1]
-    Ic = grid[x1, y0]
-    Id = grid[x1, y1]
-    
-    wa = (x1 - x_idx) * (y1 - y_idx)
-    wb = (x1 - x_idx) * (y_idx - y0)
-    wc = (x_idx - x0) * (y1 - y_idx)
-    wd = (x_idx - x0) * (y_idx - y0)
-    
-    return wa*Ia + wb*Ib + wc*Ic + wd*Id
 
-def get_map_value(map_arr, metadata, x, y):
-    origin = metadata['origin']
-    res = metadata['resolution']
+@jax.jit
+def get_map_value_nearest(map_arr, metadata, x, y):
+    """
+    Get cost value from map via nearest-neighbor grid lookup.
+    [최적화] No bilinear interpolation - direct grid indexing (1 memory access)
     
-    # Convert metric x,y to grid integer indices
-    x_idx = (x - origin[0]) / res
-    y_idx = (y - origin[1]) / res
+    Args:
+        map_arr: Cost map with shape (W, H) from track_sdf (transposed).
+                 Indexing: map_arr[x_idx, y_idx]
+        metadata: {'origin_x': x0, 'origin_y': y0, 'resolution': res}
+        x, y: World coordinates
     
-    return interpolate_2d(map_arr, x_idx, y_idx)
+    Returns:
+        Cost value at (x, y)
+    """
+    # 월드 좌표 -> 맵 인덱스 변환
+    idx_x = ((x - metadata['origin_x']) / metadata['resolution']).astype(jnp.int32)
+    idx_y = ((y - metadata['origin_y']) / metadata['resolution']).astype(jnp.int32)
+    
+    # map_arr shape is (W, H) — first axis = x, second axis = y
+    size_x, size_y = map_arr.shape
+    idx_x = jnp.clip(idx_x, 0, size_x - 1)
+    idx_y = jnp.clip(idx_y, 0, size_y - 1)
+    
+    # 직접 조회: map_arr[x_idx, y_idx] (track_sdf가 .T 해서 이 순서)
+    return map_arr[idx_x, idx_y]
 
-def calculate_cost(x, u, x_ref, Q, R, map_data=None, map_metadata=None):
+
+@jax.jit
+def calculate_cost(x, u, x_ref, Q, R, map_arr, metadata):
     """
-    Simplified MPPI Cost Function
-    
-    Cost = cost_map_value + velocity_tracking + control_cost
+    MPPI Cost Function - per-step reference tracking + collision
+
+    NOTE:
+      - In rollout we pass a single reference state for the current step.
+      - Therefore x_ref shape is (7,) (or (1,7)) not a full (N,7) trajectory.
+      - Nearest-point search over the whole trajectory should not be done here.
+
+    Args:
+        x: current state [x, y, delta, v, yaw, yaw_rate, beta]
+        u: control input [delta, v]
+        x_ref: reference state for this step [x, y, delta, v, yaw, yaw_rate, beta]
+        Q: state cost matrix (7×7)
+        R: control cost matrix (2×2)
+        map_arr: Binary cost map (W, H). 0.0 = free, 1.0 = wall/outside
+        metadata: {'origin_x', 'origin_y', 'resolution'}
+
+    Returns:
+        Total cost (scalar)
     """
-    # State Extraction
+    # Make sure x_ref is (7,)
+    x_ref = jnp.reshape(x_ref, (-1,))
+
     x_pos = x[..., 0]
     y_pos = x[..., 1]
     v_current = x[..., 3]
-    
-    # --- State Cost from CostMap ---
-    # cost_map already contains contour + wall + collision costs
-    map_cost = 0.0
-    if map_data is not None and map_metadata is not None:
-        map_cost = get_map_value(map_data['cost_map'], map_metadata, x_pos, y_pos)
-    
-    # Weight by Q[1,1] (contour weight)
-    map_cost = map_cost * Q[1, 1]
-    
-    # --- Velocity Tracking Cost ---
-    # Penalize deviation from target velocity
-    target_v = 8.0  # [m/s] Target speed
-    velocity_cost = (v_current - target_v)**2 * Q[0, 0]  # Q[0,0] = weight_progress
-    
-    # Debug: Print average costs (only for mean trajectory hopefully, or random sample)
-    # jax.debug.print("MapCost: {m:.2f} | VelCost: {v:.2f}", m=jnp.mean(map_cost), v=jnp.mean(velocity_cost))
-    
-    # --- Control Input Cost ---
+
+    # Reference for this step
+    x_ref_pos = x_ref[0]
+    y_ref_pos = x_ref[1]
+    v_ref = x_ref[3]
+
+    # === Path Tracking Cost (position error) ===
+    dx = x_pos - x_ref_pos
+    dy = y_pos - y_ref_pos
+    path_tracking_cost = (dx * dx + dy * dy) * Q[0, 0]
+
+    # === Collision Cost (binary map: 0=free, 1=wall) ===
+    collision_flag = get_map_value_nearest(map_arr, metadata, x_pos, y_pos)
+    collision_cost = collision_flag * 100000.0
+
+    # === Velocity Tracking Cost ===
+    velocity_cost = ((v_current - v_ref) ** 2) * Q[1, 1]
+
+    # === Control Input Cost ===
     u_steer = u[..., 0]
     u_vel = u[..., 1]
-    
-    steer_cost = (u_steer**2) * R[0, 0]
-    vel_cost = (u_vel**2) * R[1, 1]
-    
-    control_cost = steer_cost + vel_cost
-    
-    return map_cost + velocity_cost + control_cost
+    control_cost = (u_steer**2) * R[0, 0] + (u_vel**2) * R[1, 1]
+
+    return path_tracking_cost + collision_cost + velocity_cost + control_cost
+    #return path_tracking_cost + velocity_cost + control_cost
