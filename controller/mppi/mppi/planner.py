@@ -36,6 +36,9 @@ class DynamicMPPIPlanner:
         self.pre_processing_fn = None
 
         self.waypoints = None
+        
+        # Pre-allocate buffers for state vector (avoid repeated allocation)
+        self._x0_buffer = np.zeros(7, dtype=np.float32)
     
     def plan(
         self,
@@ -102,8 +105,15 @@ class DynamicMPPIPlanner:
         y = state[1]
         v = state[3]
         yaw = state[4]
-        # x0 of shape (nx,)
-        x0 = np.array([x, y, state[2], v, yaw, state[5], state[6]])
+        # x0 of shape (nx,) - reuse pre-allocated buffer
+        self._x0_buffer[0] = x
+        self._x0_buffer[1] = y
+        self._x0_buffer[2] = state[2]  # delta
+        self._x0_buffer[3] = v
+        self._x0_buffer[4] = yaw
+        self._x0_buffer[5] = state[5]  # yaw_rate
+        self._x0_buffer[6] = state[6]  # beta
+        x0 = self._x0_buffer
 
         N = self.solver.config.N
         dt = self.solver.config.dt
@@ -123,8 +133,8 @@ class DynamicMPPIPlanner:
         wyaw_rate = wv * wkappa
         wbeta = np.zeros_like(wv)
 
-        # Construct full reference from incoming waypoint list
-        full_ref_waypoints = np.stack([wx, wy, wdelta, wv, wpsi, wyaw_rate, wbeta], axis=1)
+        # Construct full reference from incoming waypoint list (use float32 for JAX efficiency)
+        full_ref_waypoints = np.stack([wx, wy, wdelta, wv, wpsi, wyaw_rate, wbeta], axis=1).astype(np.float32)
 
         _t1 = _time.time()
 
@@ -138,7 +148,7 @@ class DynamicMPPIPlanner:
         )
         # ref_interp shape: (N+1, 7) — includes current position as [0]
         # Solver expects (N, 7) — one ref per horizon step, skip the first (current)
-        self.ref_traj = np.asarray(ref_interp[1:N+1]).copy()  # (N, 7)
+        self.ref_traj = np.asarray(ref_interp[1:N+1], dtype=np.float32).copy()  # (N, 7)
 
         _t2 = _time.time()
 

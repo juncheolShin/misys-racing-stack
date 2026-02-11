@@ -162,8 +162,15 @@ class MPPISolver:
                 shape=(self.config.n_samples, self.config.N, self.config.nu),
             )
             da = da * u_std
+            #   mean: centered on a_opt_i (kept for reference)
             a = a_opt_i + da
             a = jnp.clip(a, self.config.u_min, self.config.u_max)
+
+            # mean: steer from a_opt_i, speed from ref_traj velocity
+            # ref_traj[:, 3] = reference speed
+            # a_mean = a_opt_i.at[:, 1].set(ref_traj[:, 3])
+            # a = a_mean + da
+            # a = jnp.clip(a, self.config.u_min, self.config.u_max)
 
             # Rollout all samples (open-loop)
             s, r = jax.vmap(

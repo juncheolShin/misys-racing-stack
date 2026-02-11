@@ -13,9 +13,9 @@ mppi_node:
     adaptive_covariance: false # 공분산 적응형 업데이트 사용 여부
     scan: true               # JAX scan 사용 여부 
     delay_time: 0.05          # Delay Compensation [s] 
-    collision_safety_margin: 0.2  # Inflate walls by this margin [m]
+    collision_safety_margin: 0.05  # Inflate walls by this margin [m]
     costmap_contour_half_width: 0.3  # [m]
-    costmap_contour_exp: 2.0         # contour exponent
+    costmap_contour_exp: 4.0         # contour exponent
     costmap_contour_scale: 1.0       # contour scale
     costmap_wall_k: 5.0              # wall steepness
     costmap_wall_scale: 20.0         # wall scale
@@ -23,10 +23,10 @@ mppi_node:
 
     # 샘플링 표준편차 [Steering Angle (rad), Velocity (m/s)]
     # Now control is (delta, v) not (ddelta, accel)
-    sampling_std: [0.2, 0.3] 
+    sampling_std: [0.2, 1.0] 
 
-    weight_contour: 3.0   # w_c: 경로 이탈 방지 
-    weight_progress: 1.0    # w_p: 전진 보상 
+    weight_contour: 1.0   # w_c: 경로 이탈 방지 
+    weight_progress: 3.0    # w_p: 전진 보상 
     
     weight_slip: 0.001     
 

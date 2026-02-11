@@ -87,6 +87,89 @@ def calc_ref_trajectory_indices(x, y, cx, cy, v, dt, N):
     return ind_list
 
 
+@njit(cache=True)
+def _calc_interpolated_reference_trajectory_numba(
+    x, y, cx, cy, cv, dt, N, reference_trajectory
+):
+    """
+    Numba-accelerated reference trajectory interpolation.
+    
+    Returns:
+        ref_list (numpy.ndarray): shape (N+1, nx) where nx is the number of state variables
+    """
+    # Calculate segment length between first two waypoints
+    dx = cx[1] - cx[0]
+    dy = cy[1] - cy[0]
+    dl = np.sqrt(dx * dx + dy * dy)
+    dl = max(dl, 1e-6)
+    
+    ncourse = len(cx)
+    
+    # Find nearest waypoint index
+    min_dist_sq = 1e12
+    ind_current = 0
+    for i in range(ncourse):
+        dist_sq = (cx[i] - x) ** 2 + (cy[i] - y) ** 2
+        if dist_sq < min_dist_sq:
+            min_dist_sq = dist_sq
+            ind_current = i
+    
+    # Project onto nearest segment to get fractional t
+    p0x = cx[ind_current]
+    p0y = cy[ind_current]
+    p1x = cx[(ind_current + 1) % ncourse]
+    p1y = cy[(ind_current + 1) % ncourse]
+    
+    seg_x = p1x - p0x
+    seg_y = p1y - p0y
+    seg_len_sq = seg_x * seg_x + seg_y * seg_y
+    
+    if seg_len_sq < 1e-12:
+        t_current = 0.0
+    else:
+        dot_prod = (x - p0x) * seg_x + (y - p0y) * seg_y
+        t_current = dot_prod / seg_len_sq
+        if t_current < 0.0:
+            t_current = 0.0
+        elif t_current > 1.0:
+            t_current = 1.0
+    
+    # Velocity interpolation and time-stepping
+    current_speed = (1.0 - t_current) * cv[ind_current] + t_current * cv[(ind_current + 1) % ncourse]
+    
+    t_list = np.zeros(N + 1, dtype=np.float64)
+    t_list[0] = t_current
+    
+    for i in range(1, N + 1):
+        t_list[i] = t_list[i - 1] + (current_speed * dt) / dl
+        current_speed = (1.0 - t_list[i]) * cv[ind_current] + t_list[i] * cv[(ind_current + 1) % ncourse]
+    
+    # Check if track is closed (loop)
+    dist_start_end = np.sqrt((cx[0] - cx[-1]) ** 2 + (cy[0] - cy[-1]) ** 2)
+    is_closed = dist_start_end < 2.0
+    
+    # Calculate indices for interpolation
+    nx = reference_trajectory.shape[1]
+    ref_list = np.zeros((N + 1, nx), dtype=np.float64)
+    
+    for i in range(N + 1):
+        ind = int(t_list[i]) + ind_current
+        t_frac = t_list[i] % 1.0
+        
+        if is_closed:
+            ind_prev = ind % ncourse
+            ind_next = (ind + 1) % ncourse
+        else:
+            ind_prev = max(0, min(ind, ncourse - 2))
+            ind_next = ind_prev + 1
+        
+        # Linear interpolation
+        for j in range(nx):
+            ref_list[i, j] = (1.0 - t_frac) * reference_trajectory[ind_prev, j] + t_frac * reference_trajectory[ind_next, j]
+    
+    return ref_list
+
+
 def calc_interpolated_reference_trajectory(
     x, y, yaw, cx, cy, cv, dt, N, reference_trajectory
 ):
@@ -107,73 +190,10 @@ def calc_interpolated_reference_trajectory(
     Returns:
         ref_list (numpy.ndarray): interpolated reference trajectory of shape (N+1, nx) where nx is the number of state variables
     """
-    # Calculate the distance between waypoints in the reference trajectory
-    dl = np.linalg.norm(np.array([cx[1], cy[1]]) - np.array([cx[0], cy[0]]))
-    dl = max(dl, 1e-6) # Avoid division by zero
-
-    # Find the total number of waypoints in the reference trajectory
-    ncourse = len(cx)
-
-    # --- Pure NumPy nearest-point search (no JAX, no GPU sync) ---
-    # 1. Find nearest waypoint index via squared-distance argmin
-    dists_sq = (cx - x)**2 + (cy - y)**2
-    ind_current = int(np.argmin(dists_sq))
-
-    # 2. Project onto the nearest segment to get fractional t ∈ [0, 1]
-    p0 = np.array([cx[ind_current], cy[ind_current]])
-    p1 = np.array([cx[(ind_current + 1) % ncourse], cy[(ind_current + 1) % ncourse]])
-    seg = p1 - p0
-    seg_len_sq = np.dot(seg, seg)
-    if seg_len_sq < 1e-12:
-        t_current = 0.0
-    else:
-        t_current = float(np.clip(np.dot(np.array([x, y]) - p0, seg) / seg_len_sq, 0.0, 1.0))
-
-    # start from the velocity at the current index, calculate next point,
-    # interpolate linearly the speed and then use that speed to get next point,
-    # Repeat this for N points
-    current_speed = (1 - t_current) * cv[ind_current] + t_current * cv[
-        (ind_current + 1) % ncourse
-    ]
-    t_list = np.zeros(N + 1)
-    t_list[0] = t_current
-    for i in range(1, N + 1):
-        t_list[i] = t_list[i - 1] + (current_speed * dt) / dl
-        current_speed = (1 - t_list[i]) * cv[ind_current] + t_list[i] * cv[
-            (ind_current + 1) % ncourse
-        ]
-
-    # Get the indices of the previous point to interpolate with for each point
-    ind_list = t_list.astype(int) + ind_current
-
-    # Check if the track is closed (loop)
-    # If start and end points are close (< 2.0m), assume closed loop
-    is_closed = np.linalg.norm(np.array([cx[0], cy[0]]) - np.array([cx[-1], cy[-1]])) < 2.0
-
-    if is_closed:
-        # Modulo the indices to wrap around the reference trajectory
-        ind_list = ind_list.astype(int) % ncourse
-        next_ind_list = (ind_list + 1) % ncourse
-        t_list = t_list % 1.0
-    else:
-        # For open paths (local waypoints), clamp to valid range [0, ncourse-2]
-        ind_list = np.clip(ind_list.astype(int), 0, ncourse - 2)
-        next_ind_list = ind_list + 1
-        t_list = t_list % 1.0
-
-    # Ensure integer indices for array indexing
-    ind_list = ind_list.astype(int)
-    next_ind_list = next_ind_list.astype(int)
-
-    # Get the previous point and the next point to interpolate with
-    prev_states = reference_trajectory[ind_list, :]
-    next_states = reference_trajectory[next_ind_list, :]
-
-    # Interpolate between the previous and next points by (1-t)*ref[i] + t*ref[i+1]
-    ref_list = (1 - t_list).reshape(-1, 1) * prev_states + t_list.reshape(
-        -1, 1
-    ) * next_states
-    return ref_list
+    # Delegate to Numba-accelerated version
+    return _calc_interpolated_reference_trajectory_numba(
+        x, y, cx, cy, cv, dt, N, reference_trajectory
+    )
 
 
 @njit(cache=True)
