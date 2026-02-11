@@ -2,28 +2,35 @@ mppi_node:
   ros__parameters:
     nx: 7 #[x, y, delta, v, yaw, yaw_rate, beta]
     nu: 2 #[steering_angle, velocity] - Now absolute targets, not rates
-    dt: 0.1                 # time step
-    predictive_horizon: 10   # N
+    dt: 0.025                 # time step
+    predictive_horizon: 20   # N
 
     n_samples: 1024         # 파티클 개수
     n_iterations: 1          # 최적화 반복 횟수
-    temperature: 0.01        # Lambda: 낮을수록 최적해에 민감 
-    gamma: 0.001              # Damping
+    temperature: 0.1        # Lambda: 낮을수록 최적해에 민감 
+    gamma: 0.1              # Damping
     
     adaptive_covariance: false # 공분산 적응형 업데이트 사용 여부
     scan: true               # JAX scan 사용 여부 
-    delay_time: 0.05          # Delay Compensation [s] (Disabled for responsiveness)
+    delay_time: 0.05          # Delay Compensation [s] 
+    collision_safety_margin: 0.2  # Inflate walls by this margin [m]
+    costmap_contour_half_width: 0.3  # [m]
+    costmap_contour_exp: 2.0         # contour exponent
+    costmap_contour_scale: 1.0       # contour scale
+    costmap_wall_k: 5.0              # wall steepness
+    costmap_wall_scale: 20.0         # wall scale
+    costmap_collision_cost: 10000.0  # outside penalty
 
     # 샘플링 표준편차 [Steering Angle (rad), Velocity (m/s)]
     # Now control is (delta, v) not (ddelta, accel)
-    sampling_std: [1.0, 1.0] 
+    sampling_std: [0.2, 0.3] 
 
-    weight_contour: 2.0    # w_c: 경로 이탈 방지 
+    weight_contour: 3.0   # w_c: 경로 이탈 방지 
     weight_progress: 1.0    # w_p: 전진 보상 
     
     weight_slip: 0.001     
 
-    weight_steer: 0.1        # 핸들 조향 비용 (Absolute)
+    weight_steer: 0.01        # 핸들 조향 비용 (Absolute)
     weight_accel: 0.001      # 가속/감속 비용 
     
     weight_steer_rate: 0.1    # 핸들 급조작 비용 (Damping Oscillation)

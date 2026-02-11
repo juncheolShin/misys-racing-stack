@@ -46,7 +46,7 @@ def calculate_cost(x, u, x_ref, Q, R, map_arr, metadata):
         x_ref: reference state for this step [x, y, delta, v, yaw, yaw_rate, beta]
         Q: state cost matrix (7×7)
         R: control cost matrix (2×2)
-        map_arr: Binary cost map (W, H). 0.0 = free, 1.0 = wall/outside
+        map_arr: Cost map (W, H). Lower is better, higher near walls/outside
         metadata: {'origin_x', 'origin_y', 'resolution'}
 
     Returns:
@@ -59,27 +59,30 @@ def calculate_cost(x, u, x_ref, Q, R, map_arr, metadata):
     y_pos = x[..., 1]
     v_current = x[..., 3]
 
-    # Reference for this step
-    x_ref_pos = x_ref[0]
-    y_ref_pos = x_ref[1]
+    # # Reference for this step
+    # x_ref_pos = x_ref[0]
+    # y_ref_pos = x_ref[1]
+    #v_ref = 8.0
     v_ref = x_ref[3]
+    # # === Path Tracking Cost (position error) ===
+    # dx = x_pos - x_ref_pos
+    # dy = y_pos - y_ref_pos
+    # path_tracking_cost = (dx * dx + dy * dy) * Q[1, 1]
 
-    # === Path Tracking Cost (position error) ===
-    dx = x_pos - x_ref_pos
-    dy = y_pos - y_ref_pos
-    path_tracking_cost = (dx * dx + dy * dy) * Q[0, 0]
+    # === Map Cost (distance-based cost map) ===
+    map_cost = get_map_value_nearest(map_arr, metadata, x_pos, y_pos) * Q[1, 1]
 
-    # === Collision Cost (binary map: 0=free, 1=wall) ===
-    collision_flag = get_map_value_nearest(map_arr, metadata, x_pos, y_pos)
-    collision_cost = collision_flag * 100000.0
-
-    # === Velocity Tracking Cost ===
-    velocity_cost = ((v_current - v_ref) ** 2) * Q[1, 1]
+    # === Velocity Tracking Cost (with 1.0 m/s deadzone) ===
+    # Penalize only when below v_ref, or when exceeding by > 2.0 m/s
+    v_low = jnp.maximum(v_ref - v_current, 0.0)
+    v_high = jnp.maximum(v_current - v_ref - 1.0, 0.0)
+    v_err = v_low + v_high
+    velocity_cost = (v_err ** 2) * Q[0, 0]
 
     # === Control Input Cost ===
     u_steer = u[..., 0]
     u_vel = u[..., 1]
     control_cost = (u_steer**2) * R[0, 0] + (u_vel**2) * R[1, 1]
 
-    return path_tracking_cost + collision_cost + velocity_cost + control_cost
-    #return path_tracking_cost + velocity_cost + control_cost
+    #return path_tracking_cost + map_cost + velocity_cost + control_cost
+    return velocity_cost + map_cost

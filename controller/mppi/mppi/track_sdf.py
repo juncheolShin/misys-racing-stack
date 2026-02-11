@@ -4,15 +4,42 @@ import matplotlib.pyplot as plt
 
 
 class TrackSDF:
-    """Binary drivable-area map: 0.0 = free, 1.0 = wall/outside."""
+    """Cost map for track: lower is better, high values near walls/outside."""
 
-    def __init__(self, wx, wy, wyaw, w_left, w_right, resolution=0.05, map_padding=2.0):
+    def __init__(
+        self,
+        wx,
+        wy,
+        wyaw,
+        w_left,
+        w_right,
+        resolution=0.05,
+        map_padding=2.0,
+        safety_margin=0.0,
+        contour_half_width=0.50,
+        contour_exp=4.0,
+        contour_scale=1.0,
+        wall_k=5.0,
+        wall_scale=20.0,
+        collision_cost=10000.0,
+    ):
         self.resolution = resolution
         self.wx = wx
         self.wy = wy
         self.wyaw = wyaw
         self.w_left = w_left
         self.w_right = w_right
+        self.safety_margin = float(safety_margin)
+        self.contour_half_width = float(contour_half_width)
+        self.contour_exp = float(contour_exp)
+        self.contour_scale = float(contour_scale)
+        self.wall_k = float(wall_k)
+        self.wall_scale = float(wall_scale)
+        self.collision_cost = float(collision_cost)
+
+        # Apply safety margin by shrinking drivable widths
+        self.w_left_eff = np.maximum(self.w_left - self.safety_margin, 0.0)
+        self.w_right_eff = np.maximum(self.w_right - self.safety_margin, 0.0)
 
         # --- Boundary points for grid extent ---
         waypoints = np.stack([wx, wy], axis=1)
@@ -23,8 +50,8 @@ class TrackSDF:
         normals[:, 0] = -tangents[:, 1]
         normals[:, 1] = tangents[:, 0]
 
-        left_bound = waypoints + normals * w_left[:, np.newaxis]
-        right_bound = waypoints - normals * w_right[:, np.newaxis]
+        left_bound = waypoints + normals * self.w_left_eff[:, np.newaxis]
+        right_bound = waypoints - normals * self.w_right_eff[:, np.newaxis]
 
         all_x = np.concatenate([wx, left_bound[:, 0], right_bound[:, 0]])
         all_y = np.concatenate([wy, left_bound[:, 1], right_bound[:, 1]])
@@ -38,15 +65,16 @@ class TrackSDF:
         self.height_cells = int((self.max_y - self.min_y) / resolution)
         self.origin = np.array([self.min_x, self.min_y])
 
-        print(f"[TrackSDF] Building binary map: {self.width_cells}(W) x {self.height_cells}(H) @ {resolution}m", flush=True)
+        print(f"[TrackSDF] Building cost map: {self.width_cells}(W) x {self.height_cells}(H) @ {resolution}m", flush=True)
 
-        self._bake_binary_map(waypoints, normals, left_bound, right_bound)
+        self._bake_costmap_cv2(waypoints, left_bound, right_bound)
 
     # ------------------------------------------------------------------
-    def _bake_binary_map(self, waypoints, normals, left_bound, right_bound):
-        """Rasterise track boundaries → binary cost_map (W, H).
-        
-        cost_map[x_idx, y_idx]:  0.0 = drivable,  1.0 = wall/outside
+    def _bake_costmap_cv2(self, waypoints, left_bound, right_bound):
+        """
+        Rasterize the track to create a cost map using OpenCV.
+
+        cost_map[x_idx, y_idx]: lower is better, higher near walls/outside
         """
         H, W = self.height_cells, self.width_cells
 
@@ -54,6 +82,7 @@ class TrackSDF:
             """World coords → pixel coords (col, row) for OpenCV."""
             return ((pts - self.origin) / self.resolution).astype(np.int32)
 
+        wp_pix = world_to_pix(waypoints)
         left_pix = world_to_pix(left_bound)
         right_pix = world_to_pix(right_bound)
 
@@ -66,16 +95,39 @@ class TrackSDF:
             ], dtype=np.int32)
             cv2.fillConvexPoly(drivable_mask, quad, 1)
 
-        # Binary: 0 = free, 1 = wall
-        # drivable_mask: 1 = drivable, 0 = non-drivable
-        # Invert: wall = 1 - drivable
-        binary = (1 - drivable_mask).astype(np.float32)
+        # Store mask for debugging/visualization
+        self.drivable_mask = drivable_mask
+
+        # Centerline mask (for contour cost)
+        center_mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.polylines(center_mask, [wp_pix.reshape(-1, 1, 2)], isClosed=False, color=1, thickness=1)
+
+        # Distance from walls (boundary of drivable area)
+        dist_from_wall_pix = cv2.distanceTransform(drivable_mask, cv2.DIST_L2, 5)
+        dist_from_wall = dist_from_wall_pix * self.resolution
+
+        # Distance from centerline (for contour cost)
+        dist_from_center_pix = cv2.distanceTransform((1 - center_mask).astype(np.uint8), cv2.DIST_L2, 5)
+        dist_from_center = dist_from_center_pix * self.resolution
+
+        # Contour cost: normalized by track half-width, then exponentiated
+        contour_normalized = dist_from_center / max(self.contour_half_width, 1e-6)
+        contour_cost = (contour_normalized ** self.contour_exp) * self.contour_scale
+
+        # Wall proximity cost: exponential increase near walls
+        wall_cost = np.exp(-self.wall_k * dist_from_wall) * self.wall_scale
+
+        # Combined cost = contour + wall
+        cost_map = contour_cost + wall_cost
+
+        # Infinite penalty for non-drivable area
+        cost_map[drivable_mask == 0] = self.collision_cost
 
         # Transpose to (W, H) so indexing is cost_map[x_idx, y_idx]
-        self.cost_map = binary.T
+        self.cost_map = cost_map.T
 
-        print(f"[TrackSDF] Binary map baked. shape={self.cost_map.shape} "
-              f"(free={int(np.sum(binary == 0))}, wall={int(np.sum(binary == 1))})", flush=True)
+        print(f"[TrackSDF] Cost map baked. shape={self.cost_map.shape} "
+              f"(min={float(np.min(cost_map)):.3f}, max={float(np.max(cost_map)):.3f})", flush=True)
 
     # ------------------------------------------------------------------
     def get_jax_maps(self):
@@ -94,25 +146,46 @@ class TrackSDF:
 
     # ------------------------------------------------------------------
     def show_debug_map(self):
-        """Quick matplotlib visualisation of the binary map."""
-        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+        """
+        Debug visualization.
+        """
+        fig, axes = plt.subplots(1, 2, figsize=(16, 8))
 
-        # cost_map is (W, H) → transpose to (H, W) for imshow (rows=Y, cols=X)
-        vis = self.cost_map.T
-        ax.imshow(vis, origin='lower',
-                  extent=[self.min_x, self.max_x, self.min_y, self.max_y],
-                  cmap='gray_r', vmin=0, vmax=1)
-        ax.set_title("Binary Cost Map (black=wall, white=free)")
-        ax.plot(self.wx, self.wy, 'r--', linewidth=1, alpha=0.7, label='centerline')
+        # 1. Cost Map
+        # self.cost_map is (W, H). imshow expects (H, W), so transpose.
+        cost_vis = self.cost_map.T
 
-        # Track boundaries
-        yaw = self.wyaw
-        nx, ny = -np.sin(yaw), np.cos(yaw)
-        ax.plot(self.wx + nx * self.w_left, self.wy + ny * self.w_left,
-                'c-', linewidth=0.8, label='left')
-        ax.plot(self.wx - nx * self.w_right, self.wy - ny * self.w_right,
-                'b-', linewidth=0.8, alpha=0.7, label='right')
-        ax.legend()
+        # Clip for visibility
+        cost_vis = np.clip(cost_vis, 0, 10.0)
+
+        im1 = axes[0].imshow(
+            cost_vis,
+            origin='lower',
+            extent=[self.min_x, self.max_x, self.min_y, self.max_y],
+            cmap='jet',
+        )
+        axes[0].set_title("Cost Map (Clipped 0-10)")
+        fig.colorbar(im1, ax=axes[0])
+        axes[0].plot(self.wx, self.wy, 'w--', linewidth=1, alpha=0.7)
+
+        # 2. Drivable Mask
+        mask = getattr(self, 'drivable_mask', None)
+        if mask is not None:
+            mask_vis = mask.astype(np.float32)
+            im2 = axes[1].imshow(
+                mask_vis,
+                origin='lower',
+                extent=[self.min_x, self.max_x, self.min_y, self.max_y],
+                cmap='gray',
+                vmin=0.0,
+                vmax=1.0,
+            )
+            axes[1].set_title("Drivable Mask")
+            fig.colorbar(im2, ax=axes[1])
+            axes[1].plot(self.wx, self.wy, 'r--', linewidth=1, alpha=0.7)
+        else:
+            axes[1].set_title("Drivable Mask (N/A)")
+
         plt.tight_layout()
         plt.show(block=True)
         print("[TrackSDF] Debug map displayed.", flush=True)

@@ -63,7 +63,7 @@ class DynamicMPPIPlanner:
             target_steering: float (DeviceArray)
             opt_traj: np.ndarray [N+1, 7] (Optimal Trajectory) or None
             sampled_trajs: np.ndarray [n_samples, N+1, 7] or None
-            ref_traj: np.ndarray [N+1, 7] or None
+            ref_traj: None
         """
         if waypoints is not None:
             if waypoints.shape[1] < 3 or len(waypoints.shape) != 2:
@@ -182,9 +182,27 @@ class DynamicMPPIPlanner:
         else:
             jax_R = None
 
-        self.x_pred, self.u_pred = self.solver.solve(
-            jax_x0, jax_ref, p=p, Q=jax_Q, R=jax_R, vis=visualize, wheelbase=wheelbase
+        self.u_pred = self.solver.solve(
+            jax_x0, jax_ref, p=p, Q=jax_Q, R=jax_R, wheelbase=wheelbase
         )
+
+        # Rollout optimal trajectory only when visualization is requested.
+        if visualize:
+            current_Q = jax_Q if jax_Q is not None else self.solver.Q
+            current_R = jax_R if jax_R is not None else self.solver.R
+            current_p = p if p is not None else self.solver.p
+            self.x_pred, _ = self.solver._rollout(
+                self.u_pred,
+                jax_x0,
+                jax_ref,
+                current_p,
+                current_Q,
+                current_R,
+                self.solver.map_data,
+                self.solver.map_metadata,
+            )
+        else:
+            self.x_pred = None
 
         _t4 = _time.time()
 
@@ -215,7 +233,7 @@ class DynamicMPPIPlanner:
         if not visualize:
             return target_speed_raw, target_steering_raw, None, None, None
 
-        # Convert trajectories to NumPy for visualization/publishing markers.
+        # Convert optimal trajectory to NumPy for visualization/publishing markers.
         x_pred_np = jnp_to_np(self.x_pred)
 
         # Some solver configurations may return an extra batch dimension.
@@ -232,8 +250,8 @@ class DynamicMPPIPlanner:
         opt_traj = np.concatenate([x0_np, x_pred_np], axis=0)
 
         # Sampled trajectories for visualization.
-        s_sampled_np = jnp_to_np(self.solver.samples[1])
-        if s_sampled_np.ndim == 3 and s_sampled_np.shape[-1] == 7:
+        s_sampled_np = jnp_to_np(self.solver.samples[1]) if self.solver.samples is not None else None
+        if s_sampled_np is not None and s_sampled_np.ndim == 3 and s_sampled_np.shape[-1] == 7:
             sampled_trajs = np.concatenate(
                 [np.repeat(x0_np[None, ...], s_sampled_np.shape[0], axis=0), s_sampled_np],
                 axis=1,
@@ -241,11 +259,4 @@ class DynamicMPPIPlanner:
         else:
             sampled_trajs = s_sampled_np
 
-        # Reference trajectory visualization: ref_traj is now exactly (N, 7), no padding.
-        ref_np = np.asarray(self.ref_traj)
-        ref_traj_vis = np.concatenate([x0_np, ref_np], axis=0)
-
-        self.local_plan = ref_traj_vis[:, :2]
-        self.control_solution = np.array(opt_traj[:, :2]).T
-
-        return target_speed_raw, target_steering_raw, opt_traj, sampled_trajs, ref_traj_vis
+        return target_speed_raw, target_steering_raw, opt_traj, sampled_trajs, None

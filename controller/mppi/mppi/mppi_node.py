@@ -132,7 +132,7 @@ class MPPINode(Node):
             # --- MPPI Hyperparameters ---
             {'name': 'n_samples', 'default': 2048, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_INTEGER, integer_range=[IntegerRange(from_value=512, to_value=8192, step=128)])},
             {'name': 'n_iterations', 'default': 1, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_INTEGER, integer_range=[IntegerRange(from_value=1, to_value=5, step=1)])},
-            {'name': 'temperature', 'default': 0.1, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0001, to_value=10.0, step=0.0001)])},
+            {'name': 'temperature', 'default': 0.1, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0001, to_value=100.0, step=0.0001)])},
             {'name': 'gamma', 'default': 0.01, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0, to_value=0.2, step=0.001)])},
             
              # --- Weights (Clear & Intuitive) ---
@@ -157,16 +157,23 @@ class MPPINode(Node):
             {'name': 'adaptive_covariance', 'default': True, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL)},
             {'name': 'scan', 'default': True, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL)},
             {'name': 'delay_time', 'default': 0.05, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0, to_value=1.0, step=0.01)])},
+            {'name': 'collision_safety_margin', 'default': 0.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.0, to_value=2.0, step=0.01)])},
+            {'name': 'costmap_contour_half_width', 'default': 0.5, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.05, to_value=2.0, step=0.01)])},
+            {'name': 'costmap_contour_exp', 'default': 4.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=1.0, to_value=8.0, step=0.1)])},
+            {'name': 'costmap_contour_scale', 'default': 1.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.1, to_value=100.0, step=0.1)])},
+            {'name': 'costmap_wall_k', 'default': 5.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.1, to_value=20.0, step=0.1)])},
+            {'name': 'costmap_wall_scale', 'default': 20.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=0.1, to_value=200.0, step=0.1)])},
+            {'name': 'costmap_collision_cost', 'default': 10000.0, 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE, floating_point_range=[FloatingPointRange(from_value=100.0, to_value=100000.0, step=100.0)])},
             
             # --- Debug / Visualization ---
             {
                 'name': 'enable_visualization',
-                'default': False,
+                'default': True,
                 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL),
             },
             {
                 'name': 'profile_plan_breakdown',
-                'default': True,
+                'default': False,
                 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL),
             },
         ]
@@ -416,7 +423,29 @@ class MPPINode(Node):
             w_right = np.array([wp.width_right_m for wp in msg.ltplwpnts])
             
             from .track_sdf import TrackSDF
-            self.track_sdf = TrackSDF(wx, wy, wyaw, w_left, w_right, resolution=0.05, map_padding=2.0)
+            safety_margin = float(self.get_parameter('collision_safety_margin').value)
+            contour_half_width = float(self.get_parameter('costmap_contour_half_width').value)
+            contour_exp = float(self.get_parameter('costmap_contour_exp').value)
+            contour_scale = float(self.get_parameter('costmap_contour_scale').value)
+            wall_k = float(self.get_parameter('costmap_wall_k').value)
+            wall_scale = float(self.get_parameter('costmap_wall_scale').value)
+            collision_cost = float(self.get_parameter('costmap_collision_cost').value)
+            self.track_sdf = TrackSDF(
+                wx,
+                wy,
+                wyaw,
+                w_left,
+                w_right,
+                resolution=0.05,
+                map_padding=2.0,
+                safety_margin=safety_margin,
+                contour_half_width=contour_half_width,
+                contour_exp=contour_exp,
+                contour_scale=contour_scale,
+                wall_k=wall_k,
+                wall_scale=wall_scale,
+                collision_cost=collision_cost,
+            )
             
             # Visualize Map (Non-blocking)
             self.track_sdf.show_debug_map()
@@ -428,7 +457,7 @@ class MPPINode(Node):
                  self.planner.solver.set_map(self.map_data_jax, self.map_metadata)
             
             # Publish cost map for RViz visualization
-            #self.publish_costmap()
+            self.publish_costmap()
             
             # Trigger Warmup if not done yet
             if not self.is_warmed_up:
@@ -494,7 +523,7 @@ class MPPINode(Node):
 
         # Visualization at reduced rate (5 Hz) to avoid GPU sync every tick
         self._vis_counter = getattr(self, '_vis_counter', 0) + 1
-        do_vis_this_tick = enable_vis and (self._vis_counter % 8 == 0)  # 40Hz / 8 = 5Hz
+        do_vis_this_tick = enable_vis and (self._vis_counter % 1 == 0)  # 40Hz / 8 = 5Hz
 
         t0 = time.time()
         target_speed_raw, target_steering_raw, opt_traj, sampled_trajs, ref_traj = self.planner.plan(
@@ -541,7 +570,7 @@ class MPPINode(Node):
         self.drive_pub.publish(drive_msg)
 
         # Publish Visualization (only on vis ticks — 5Hz)
-        if do_vis_this_tick and opt_traj is not None and sampled_trajs is not None and ref_traj is not None:
+        if do_vis_this_tick and opt_traj is not None:
             self.publish_visualization(opt_traj, sampled_trajs, ref_traj)
 
     def publish_visualization(self, opt_traj, sampled_trajs, ref_traj):
@@ -582,13 +611,13 @@ class MPPINode(Node):
             marker_s.id = 1
             marker_s.type = Marker.LINE_LIST
             marker_s.action = Marker.ADD
-            marker_s.scale.x = 0.02 
+            marker_s.scale.x = 0.02
             marker_s.color.a = 0.2
             marker_s.color.r = 0.0
             marker_s.color.g = 0.5
             marker_s.color.b = 1.0
 
-            # Visualize only a subset for performance (e.g., first 30 samples)
+            # Visualize only a subset for performance (e.g., first 20 samples)
             num_vis_samples = min(20, sampled_trajs.shape[0])
             for i in range(num_vis_samples):
                 traj = sampled_trajs[i]
@@ -597,39 +626,31 @@ class MPPINode(Node):
                     p1.x = float(traj[j, 0])
                     p1.y = float(traj[j, 1])
                     p1.z = 0.05
-                    
+
                     p2 = Point()
-                    p2.x = float(traj[j+1, 0])
-                    p2.y = float(traj[j+1, 1])
+                    p2.x = float(traj[j + 1, 0])
+                    p2.y = float(traj[j + 1, 1])
                     p2.z = 0.05
-                    
+
                     marker_s.points.append(p1)
                     marker_s.points.append(p2)
             marker_array.markers.append(marker_s)
+        else:
+            marker_clear_sampled = Marker()
+            marker_clear_sampled.header.frame_id = "map"
+            marker_clear_sampled.header.stamp = timestamp
+            marker_clear_sampled.ns = "mppi_sampled"
+            marker_clear_sampled.id = 1
+            marker_clear_sampled.action = Marker.DELETE
+            marker_array.markers.append(marker_clear_sampled)
 
-        # 3. Reference Trajectory (Red LineStrip)
-        # ref_traj shape: [N+1, 7]
-        if ref_traj is not None:
-            marker_ref = Marker()
-            marker_ref.header.frame_id = "map"
-            marker_ref.header.stamp = timestamp
-            marker_ref.ns = "mppi_reference"
-            marker_ref.id = 2
-            marker_ref.type = Marker.LINE_STRIP
-            marker_ref.action = Marker.ADD
-            marker_ref.scale.x = 0.1 # Line width
-            marker_ref.color.a = 1.0
-            marker_ref.color.r = 1.0
-            marker_ref.color.g = 0.0
-            marker_ref.color.b = 0.0
-            
-            for i in range(ref_traj.shape[0]):
-                p = Point()
-                p.x = float(ref_traj[i, 0])
-                p.y = float(ref_traj[i, 1])
-                p.z = 0.1
-                marker_ref.points.append(p)
-            marker_array.markers.append(marker_ref)
+        marker_clear_ref = Marker()
+        marker_clear_ref.header.frame_id = "map"
+        marker_clear_ref.header.stamp = timestamp
+        marker_clear_ref.ns = "mppi_reference"
+        marker_clear_ref.id = 2
+        marker_clear_ref.action = Marker.DELETE
+        marker_array.markers.append(marker_clear_ref)
 
         self.vis_pub.publish(marker_array)
 

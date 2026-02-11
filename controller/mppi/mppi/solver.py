@@ -142,6 +142,9 @@ class MPPISolver:
         # rng split inside JIT — avoids Python-level dispatch
         rng, iter_rng = jax.random.split(rng)
 
+        u_std = jnp.asarray(self.config.u_std, dtype=a_opt.dtype)
+        u_std = jnp.maximum(u_std, 1e-6)
+
         def body_fn(carry, _):
             a_opt_i, rng_i = carry
 
@@ -150,12 +153,15 @@ class MPPISolver:
             # Truncated normal noise centred on a_opt
             adjusted_lower = self.config.u_min - a_opt_i
             adjusted_upper = self.config.u_max - a_opt_i
+            scaled_lower = adjusted_lower / u_std
+            scaled_upper = adjusted_upper / u_std
             da = jax.random.truncated_normal(
                 rng_da,
-                lower=adjusted_lower,
-                upper=adjusted_upper,
+                lower=scaled_lower,
+                upper=scaled_upper,
                 shape=(self.config.n_samples, self.config.N, self.config.nu),
             )
+            da = da * u_std
             a = a_opt_i + da
             a = jnp.clip(a, self.config.u_min, self.config.u_max)
 
@@ -189,7 +195,7 @@ class MPPISolver:
     # ------------------------------------------------------------------
     #  Solve  (minimal Python — single JIT dispatch)
     # ------------------------------------------------------------------
-    def solve(self, x0, ref_traj, vis=True, p=None, Q=None, R=None,
+    def solve(self, x0, ref_traj, p=None, Q=None, R=None,
               wheelbase=0.335):
         import time as _time
         _ts0 = _time.time()
@@ -223,11 +229,16 @@ class MPPISolver:
             self._solve_profile_counter = 0
         self._solve_profile_counter += 1
         if self._solve_profile_counter % 40 == 0:
+            # Force synchronization to measure true GPU completion time
+            _ts_sync0 = _time.time()
+            a_opt_final.block_until_ready()
+            _ts_sync1 = _time.time()
             _prep = (_ts1 - _ts0) * 1000.0
             _jit = (_ts2 - _ts1) * 1000.0
             _post = (_ts3 - _ts2) * 1000.0
+            _sync = (_ts_sync1 - _ts_sync0) * 1000.0
             print(f"[SolveProfile] prep={_prep:.2f}ms | jit={_jit:.2f}ms "
-                  f"| post={_post:.2f}ms | total={(_ts3 - _ts0)*1000.0:.2f}ms",
+                  f"| post={_post:.2f}ms | sync={_sync:.2f}ms | total={(_ts3 - _ts0)*1000.0:.2f}ms",
                   flush=True)
 
-        return s, a_opt_final
+        return a_opt_final
