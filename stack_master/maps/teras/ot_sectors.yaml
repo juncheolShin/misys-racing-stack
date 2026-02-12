@@ -6,13 +6,13 @@ ot_interpolator:
     ot_sector_begin: 0.5
     Overtaking_sector0:
       start: 0
-      end: 192
+      end: 75
       ot_flag: true
     Overtaking_sector1:
-      start: 193
-      end: 371
+      start: 76
+      end: 211
       ot_flag: true
     Overtaking_sector2:
-      start: 372
-      end: 372
+      start: 212
+      end: 378
       ot_flag: true

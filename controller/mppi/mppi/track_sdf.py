@@ -120,8 +120,16 @@ class TrackSDF:
         # Combined cost = contour + wall
         cost_map = contour_cost + wall_cost
 
-        # Infinite penalty for non-drivable area
-        cost_map[drivable_mask == 0] = self.collision_cost
+        # Distance outside drivable area (penetration depth)
+        # For outside region, distanceTransform gives distance to nearest drivable cell
+        dist_outside_pix = cv2.distanceTransform((1 - drivable_mask).astype(np.uint8), cv2.DIST_L2, 5)
+        dist_outside = dist_outside_pix * self.resolution
+
+        # Exponential penalty outside: deeper penetration => rapidly increasing cost
+        outside_cost = self.collision_cost * np.exp(self.wall_k * dist_outside)
+
+        # Apply outside cost only where non-drivable
+        cost_map[drivable_mask == 0] = outside_cost[drivable_mask == 0]
 
         # Transpose to (W, H) so indexing is cost_map[x_idx, y_idx]
         self.cost_map = cost_map.T
@@ -156,7 +164,7 @@ class TrackSDF:
         cost_vis = self.cost_map.T
 
         # Clip for visibility
-        cost_vis = np.clip(cost_vis, 0, 10.0)
+        cost_vis = np.clip(cost_vis, 0, 100)
 
         im1 = axes[0].imshow(
             cost_vis,

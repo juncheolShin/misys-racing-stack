@@ -7,14 +7,14 @@ mppi_node:
 
     n_samples: 1024         # 파티클 개수
     n_iterations: 1          # 최적화 반복 횟수
-    temperature: 0.1        # Lambda: 낮을수록 최적해에 민감 
+    temperature: 0.02        # Lambda: 낮을수록 최적해에 민감 
     gamma: 0.1              # Damping
     
     adaptive_covariance: false # 공분산 적응형 업데이트 사용 여부
     scan: true               # JAX scan 사용 여부 
     delay_time: 0.05          # Delay Compensation [s] 
-    collision_safety_margin: 0.05  # Inflate walls by this margin [m]
-    costmap_contour_half_width: 0.3  # [m]
+    collision_safety_margin: 0.2  # Inflate walls by this margin [m]
+    costmap_contour_half_width: 0.4  # [m]
     costmap_contour_exp: 4.0         # contour exponent
     costmap_contour_scale: 1.0       # contour scale
     costmap_wall_k: 5.0              # wall steepness
@@ -23,10 +23,10 @@ mppi_node:
 
     # 샘플링 표준편차 [Steering Angle (rad), Velocity (m/s)]
     # Now control is (delta, v) not (ddelta, accel)
-    sampling_std: [0.2, 1.0] 
+    sampling_std: [0.4, 2.0] 
 
     weight_contour: 1.0   # w_c: 경로 이탈 방지 
-    weight_progress: 3.0    # w_p: 전진 보상 
+    weight_progress: 10.0    # w_p: 전진 보상 
     
     weight_slip: 0.001     
 

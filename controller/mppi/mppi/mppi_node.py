@@ -168,12 +168,12 @@ class MPPINode(Node):
             # --- Debug / Visualization ---
             {
                 'name': 'enable_visualization',
-                'default': True,
+                'default': False,
                 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL),
             },
             {
                 'name': 'profile_plan_breakdown',
-                'default': False,
+                'default': True,
                 'descriptor': ParameterDescriptor(type=ParameterType.PARAMETER_BOOL),
             },
         ]
@@ -552,6 +552,10 @@ class MPPINode(Node):
                 f"[ProfileBreakdown] plan()={plan_time:.2f}ms | convert(float)={t_convert:.2f}ms | total={(t2 - t0)*1000.0:.2f}ms",
                 throttle_duration_sec=1.0,
             )
+            self.get_logger().info(
+                f"Target Speed: {target_speed:.2f} m/s | Target Steering: {target_steering:.3f} rad",
+                throttle_duration_sec=1.0,
+            )
 
         # Clipping
         target_steering = np.clip(target_steering, self.dynamics_params.MIN_STEER, self.dynamics_params.MAX_STEER)
@@ -618,7 +622,7 @@ class MPPINode(Node):
             marker_s.color.b = 1.0
 
             # Visualize only a subset for performance (e.g., first 20 samples)
-            num_vis_samples = min(20, sampled_trajs.shape[0])
+            num_vis_samples = min(50, sampled_trajs.shape[0])
             for i in range(num_vis_samples):
                 traj = sampled_trajs[i]
                 for j in range(traj.shape[0] - 1):

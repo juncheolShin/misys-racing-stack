@@ -22,8 +22,8 @@ mppi_node:
 
     s_min: -0.4189  
     s_max: 0.4189   
-    sv_min: -3.2    
-    sv_max: 3.2
+    sv_min: -3.2 # -3.2   
+    sv_max: 3.2  # 3.2
     
     v_min: 0.5      
     v_max: 10.0 

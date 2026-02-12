@@ -1,4 +1,4 @@
-mu: 1.0489  # surface friction coefficient
+mu: 1.0489  # surface friction coefficient 1.0489
 C_Sf: 4.718 # Cornering stiffness coefficient, front
 C_Sr: 5.4562 # Cornering stiffness coefficient, rear
 lf: 0.15875 # Distance from center of gravity to front axle

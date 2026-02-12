@@ -227,18 +227,18 @@ class DynamicMPPIPlanner:
 
         _t5 = _time.time()
 
-        # Detailed timing (throttled via caller)
-        _ref_build = (_t1 - _t0) * 1000.0
-        _crop_pad = (_t2 - _t1) * 1000.0
-        _cache = (_t3 - _t2) * 1000.0
-        _solve = (_t4 - _t3) * 1000.0
-        _index = (_t5 - _t4) * 1000.0
-        _total_plan = (_t5 - _t_plan_start) * 1000.0
-        if not hasattr(self, '_plan_profile_counter'):
-            self._plan_profile_counter = 0
-        self._plan_profile_counter += 1
-        if self._plan_profile_counter % 40 == 0:  # Print every 1 second at 40Hz
-            print(f"[PlanProfile] ref_build={_ref_build:.2f}ms | crop_pad={_crop_pad:.2f}ms | cache={_cache:.2f}ms | solve={_solve:.2f}ms | index={_index:.2f}ms | total={_total_plan:.2f}ms", flush=True)
+        # # Detailed timing (throttled via caller)
+        # _ref_build = (_t1 - _t0) * 1000.0
+        # _crop_pad = (_t2 - _t1) * 1000.0
+        # _cache = (_t3 - _t2) * 1000.0
+        # _solve = (_t4 - _t3) * 1000.0
+        # _index = (_t5 - _t4) * 1000.0
+        # _total_plan = (_t5 - _t_plan_start) * 1000.0
+        # if not hasattr(self, '_plan_profile_counter'):
+        #     self._plan_profile_counter = 0
+        # self._plan_profile_counter += 1
+        # if self._plan_profile_counter % 40 == 0:  # Print every 1 second at 40Hz
+        #     print(f"[PlanProfile] ref_build={_ref_build:.2f}ms | crop_pad={_crop_pad:.2f}ms | cache={_cache:.2f}ms | solve={_solve:.2f}ms | index={_index:.2f}ms | total={_total_plan:.2f}ms", flush=True)
 
         if not visualize:
             return target_speed_raw, target_steering_raw, None, None, None

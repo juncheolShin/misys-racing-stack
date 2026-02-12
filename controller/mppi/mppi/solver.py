@@ -61,6 +61,10 @@ class MPPISolver:
         # Pre-compute returns triu matrix (constant)
         self._triu_mat = jnp.triu(jnp.ones((config.N, config.N)))
 
+        # Savitzky-Golay filter coefficients (window=5, polyorder=2, normalized)
+        # Pre-computed for efficiency: [-3, 12, 17, 12, -3] / 35
+        self._sg_coeffs = jnp.array([-3, 12, 17, 12, -3], dtype=jnp.float32) / 35.0
+
         # Map Data
         self.map_data = None
         self.map_metadata = None
@@ -101,6 +105,25 @@ class MPPISolver:
         w = jnp.exp(R_stdzd / self.config.temperature)
         w = w / jnp.maximum(jnp.sum(w), 1e-8)
         return w
+
+    def _savgol_smooth(self, a_seq):
+        """
+        Apply Savitzky-Golay smoothing along horizon axis (N timesteps).
+        a_seq: (N, nu) control sequence
+        Returns: (N, nu) smoothed control sequence
+        """
+        # Apply 1D convolution per control dimension
+        # Mode='same' with padding to maintain length N
+        def smooth_channel(a_1d):
+            # Pad with edge values (replicate boundary)
+            padded = jnp.pad(a_1d, (2, 2), mode='edge')
+            # Convolve with SG coefficients
+            smoothed = jnp.convolve(padded, self._sg_coeffs, mode='valid')
+            return smoothed
+        
+        # Apply to each control dimension (steering, velocity)
+        a_smoothed = jax.vmap(smooth_channel, in_axes=1, out_axes=1)(a_seq)
+        return a_smoothed
 
     # ------------------------------------------------------------------
     #  Rollout (open-loop, time-indexed reference)
@@ -163,14 +186,14 @@ class MPPISolver:
             )
             da = da * u_std
             #   mean: centered on a_opt_i (kept for reference)
-            a = a_opt_i + da
-            a = jnp.clip(a, self.config.u_min, self.config.u_max)
+            # a = a_opt_i + da
+            # a = jnp.clip(a, self.config.u_min, self.config.u_max)
 
             # mean: steer from a_opt_i, speed from ref_traj velocity
-            # ref_traj[:, 3] = reference speed
-            # a_mean = a_opt_i.at[:, 1].set(ref_traj[:, 3])
-            # a = a_mean + da
-            # a = jnp.clip(a, self.config.u_min, self.config.u_max)
+            #ref_traj[:, 3] = reference speed
+            a_mean = a_opt_i.at[:, 1].set(ref_traj[:, 3])
+            a = a_mean + da
+            a = jnp.clip(a, self.config.u_min, self.config.u_max)
 
             # Rollout all samples (open-loop)
             s, r = jax.vmap(
@@ -194,8 +217,11 @@ class MPPISolver:
         s_last = s_all[-1]
         r_last = r_all[-1]
 
-        # Warm-start shift (on GPU)
-        a_opt_shifted = jnp.concatenate([a_opt_final[1:], a_opt_final[-1:]], axis=0)
+        # Savitzky-Golay smoothing along horizon axis
+        a_opt_smoothed = self._savgol_smooth(a_opt_final)
+
+        # Warm-start shift (on GPU) - use smoothed trajectory
+        a_opt_shifted = jnp.concatenate([a_opt_smoothed[1:], a_opt_smoothed[-1:]], axis=0)
 
         return a_opt_shifted, rng, a_opt_final, a_last, s_last, r_last
 
@@ -231,21 +257,21 @@ class MPPISolver:
 
         _ts3 = _time.time()
 
-        # Throttled profiling
-        if not hasattr(self, '_solve_profile_counter'):
-            self._solve_profile_counter = 0
-        self._solve_profile_counter += 1
-        if self._solve_profile_counter % 40 == 0:
-            # Force synchronization to measure true GPU completion time
-            _ts_sync0 = _time.time()
-            a_opt_final.block_until_ready()
-            _ts_sync1 = _time.time()
-            _prep = (_ts1 - _ts0) * 1000.0
-            _jit = (_ts2 - _ts1) * 1000.0
-            _post = (_ts3 - _ts2) * 1000.0
-            _sync = (_ts_sync1 - _ts_sync0) * 1000.0
-            print(f"[SolveProfile] prep={_prep:.2f}ms | jit={_jit:.2f}ms "
-                  f"| post={_post:.2f}ms | sync={_sync:.2f}ms | total={(_ts3 - _ts0)*1000.0:.2f}ms",
-                  flush=True)
+        # # Throttled profiling
+        # if not hasattr(self, '_solve_profile_counter'):
+        #     self._solve_profile_counter = 0
+        # self._solve_profile_counter += 1
+        # if self._solve_profile_counter % 40 == 0:
+        #     # Force synchronization to measure true GPU completion time
+        #     _ts_sync0 = _time.time()
+        #     a_opt_final.block_until_ready()
+        #     _ts_sync1 = _time.time()
+        #     _prep = (_ts1 - _ts0) * 1000.0
+        #     _jit = (_ts2 - _ts1) * 1000.0
+        #     _post = (_ts3 - _ts2) * 1000.0
+        #     _sync = (_ts_sync1 - _ts_sync0) * 1000.0
+        #     print(f"[SolveProfile] prep={_prep:.2f}ms | jit={_jit:.2f}ms "
+        #           f"| post={_post:.2f}ms | sync={_sync:.2f}ms | total={(_ts3 - _ts0)*1000.0:.2f}ms",
+        #           flush=True)
 
         return a_opt_final
